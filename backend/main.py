@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,16 @@ app.add_middleware(
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True, "service": "storybuddy-api"}
+
+
+@app.get("/api/config")
+def config() -> dict:
+    provider = os.getenv("STORYBUDDY_IMAGE_PROVIDER", "mock").strip().lower() or "mock"
+    has_api_key = bool(os.getenv("STORYBUDDY_IMAGE_API_KEY", "").strip())
+    return {
+        "imageProvider": provider,
+        "hasImageApiKey": has_api_key,
+    }
 
 
 @app.get("/api/packages")
@@ -66,9 +77,11 @@ def setup_ingest(req: SetupIngestRequest) -> SetupIngestResponse:
 
 @app.post("/api/ask", response_model=AskResponse)
 async def ask(req: AskRequest) -> AskResponse:
-    package = load_package(req.package_id)
+    package = req.package
+    if not package and req.package_id:
+        package = load_package(req.package_id)
     if not package:
-        raise HTTPException(status_code=404, detail="package not found")
+        raise HTTPException(status_code=404, detail="package not found; resave package or include package payload")
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question is required")
 

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from random import Random
 from typing import Dict, List, Tuple
 
-from .image_adapter import generate_image
+from .image_adapter import generate_image, get_image_provider
 from .models import AnswerCard, AnswerOption, AskResponse, CardDebug, CharacterStyleMap, SetupIngestRequest, SetupIngestResponse, StoryPackage, StyleProfile, StyleRef
 
 try:
@@ -274,6 +274,7 @@ async def _generate_card(
     t0: float,
     timeline: List[Dict[str, object]],
 ) -> AnswerCard:
+    image_provider = get_image_provider()
     def begin(event: str, meta: Dict[str, object] | None = None) -> Dict[str, object]:
         item = {
             "event": event,
@@ -354,6 +355,7 @@ async def _generate_card(
             selectedParticipants=participants,
             styleRefsUsed=style_refs_used,
             modelUsed=model,
+            imageProvider=image_provider,
             generationError=generation_error,
             supportFact=option.support_fact,
         ),

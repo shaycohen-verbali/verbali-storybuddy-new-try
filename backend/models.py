@@ -63,7 +63,8 @@ class SetupIngestResponse(BaseModel):
 
 
 class AskRequest(BaseModel):
-    package_id: str = Field(alias="packageId")
+    package_id: Optional[str] = Field(default=None, alias="packageId")
+    package: Optional[StoryPackage] = None
     question: str
     model: Literal["nano-banana-2", "pro", "standard"] = "nano-banana-2"
 
@@ -85,6 +86,7 @@ class CardDebug(BaseModel):
     selected_participants: Dict[str, object] = Field(alias="selectedParticipants")
     style_refs_used: List[Dict[str, str]] = Field(alias="styleRefsUsed")
     image_model: str = Field(alias="modelUsed")
+    image_provider: str = Field(alias="imageProvider")
     generation_error: Optional[str] = Field(alias="generationError", default=None)
     support_fact: str = Field(alias="supportFact")
 

@@ -3,6 +3,7 @@ const state = {
   editingPackageId: null,
   styleRefs: [],
   latestDebugBundle: null,
+  runtimeConfig: null,
   speech: {
     recognition: null,
     listening: false,
@@ -51,6 +52,7 @@ init().catch((err) => {
 });
 
 async function init() {
+  await loadRuntimeConfig();
   wireTabs();
   wireSetup();
   wireAsk();
@@ -58,6 +60,17 @@ async function init() {
   setupSpeech();
   await refreshPackages();
   clearRun();
+  if (state.runtimeConfig?.imageProvider === "mock") {
+    setSetupNote("Image provider is currently mock. Configure STORYBUDDY_IMAGE_PROVIDER and STORYBUDDY_IMAGE_API_KEY for real model generation.");
+  }
+}
+
+async function loadRuntimeConfig() {
+  try {
+    state.runtimeConfig = await apiRequest("/api/config");
+  } catch {
+    state.runtimeConfig = null;
+  }
 }
 
 function wireTabs() {
@@ -201,6 +214,7 @@ function wireAsk() {
     const packageId = el.packageSelect.value;
     const question = el.questionInput.value.trim();
     const model = el.modelSelect.value;
+    const selectedPackage = state.packages.find((pkg) => pkg.id === packageId) || null;
 
     if (!packageId) {
       el.timingsView.textContent = "Select a story package first.";
@@ -217,7 +231,7 @@ function wireAsk() {
     try {
       const result = await apiRequest("/api/ask", {
         method: "POST",
-        body: JSON.stringify({ packageId, question, model }),
+        body: JSON.stringify({ packageId, package: selectedPackage, question, model }),
       });
       state.latestDebugBundle = result.debugBundle;
       renderAskResult(result);

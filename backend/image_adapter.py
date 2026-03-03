@@ -9,6 +9,11 @@ from typing import Dict, List
 import httpx
 
 
+def get_image_provider() -> str:
+    provider = os.getenv("STORYBUDDY_IMAGE_PROVIDER", "mock").strip().lower()
+    return provider if provider else "mock"
+
+
 def _seeded_palette(seed_text: str) -> List[str]:
     digest = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
     a = int(digest[:2], 16)
@@ -54,8 +59,8 @@ async def generate_image(
     characters: List[str],
     style_ref_summaries: List[Dict[str, str]],
 ) -> str:
-    provider = os.getenv("STORYBUDDY_IMAGE_PROVIDER", "mock").strip().lower()
-    if provider in {"", "mock"}:
+    provider = get_image_provider()
+    if provider == "mock":
         seed = f"{model}|{scene}|{','.join(characters)}|{prompt[:120]}"
         return _mock_svg_data_url(prompt, scene, characters, seed)
 

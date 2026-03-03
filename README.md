@@ -59,6 +59,7 @@ The app will call `/images/generations` with the selected model (`nano-banana-2`
 ## API endpoints
 
 - `GET /api/health`
+- `GET /api/config`
 - `GET /api/packages`
 - `GET /api/packages/{package_id}`
 - `DELETE /api/packages/{package_id}`
@@ -71,3 +72,4 @@ The app will call `/images/generations` with the selected model (`nano-banana-2`
 - For scanned/image-only PDFs, provide OCR text manually in setup.
 - If real image generation fails, backend falls back to mock image generation and records the error in card debug payload.
 - On Vercel serverless, package JSON files are stored in `/tmp` (ephemeral). For persistent storage, wire a real DB/blob store.
+- `POST /api/ask` now accepts either `packageId` or full `package` payload; frontend sends the full package to avoid serverless filesystem misses.
