@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StoryBuddy</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__shine"></div>
+      <div class="hero__content">
+        <p class="eyebrow">StoryBuddy</p>
+        <h1>Visual Reading Companion for Non-Verbal Learners</h1>
+        <p>
+          Upload a story package, ask a spoken or typed question, and get 3 visual answer cards with one book-grounded answer.
+        </p>
+      </div>
+    </header>
+
+    <main class="layout">
+      <nav class="tabs" role="tablist" aria-label="StoryBuddy sections">
+        <button class="tab is-active" data-tab="setup" role="tab" aria-selected="true">Setup</button>
+        <button class="tab" data-tab="ask" role="tab" aria-selected="false">Ask</button>
+        <button class="tab" data-tab="library" role="tab" aria-selected="false">Library</button>
+      </nav>
+
+      <section class="panel is-active" id="setup-panel" role="tabpanel">
+        <h2>Create / Update Story Package</h2>
+        <div class="grid grid--2">
+          <label class="field">
+            <span>Story title</span>
+            <input id="storyTitle" type="text" placeholder="The Little Red Hen" />
+          </label>
+          <label class="field">
+            <span>Book file (PDF/TXT)</span>
+            <input id="bookFile" type="file" accept=".pdf,.txt,.md" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>Book text (paste full text if PDF extraction is unavailable)</span>
+          <textarea id="bookText" rows="7" placeholder="Paste story text here..."></textarea>
+        </label>
+
+        <label class="field">
+          <span>Style / reference images (optional)</span>
+          <input id="styleRefs" type="file" accept="image/*" multiple />
+        </label>
+
+        <div class="actions">
+          <button id="learnBtn" class="btn btn--accent">Learn Story Facts + Style</button>
+          <button id="savePackageBtn" class="btn">Save Story Package</button>
+          <button id="resetSetupBtn" class="btn btn--ghost">Reset Setup</button>
+        </div>
+
+        <div id="learnSummary" class="note" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" id="ask-panel" role="tabpanel" aria-hidden="true">
+        <h2>Ask the Story</h2>
+        <div class="grid grid--2">
+          <label class="field">
+            <span>Story package</span>
+            <select id="packageSelect"></select>
+          </label>
+          <label class="field">
+            <span>Image model</span>
+            <select id="modelSelect">
+              <option value="nano-banana-2">Nano Banana 2</option>
+              <option value="pro">Pro</option>
+              <option value="standard">Standard</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="grid grid--2">
+          <label class="field">
+            <span>Parent question (text)</span>
+            <input id="questionInput" type="text" placeholder="Who helped the hen bake bread?" />
+          </label>
+          <div class="field field--buttonRow">
+            <span>Speech input</span>
+            <div class="actions">
+              <button id="speechBtn" class="btn">Start voice capture</button>
+              <span id="speechStatus" class="inline-note">Idle</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="generateBtn" class="btn btn--accent">Generate 3 Answer Cards</button>
+          <button id="clearRunBtn" class="btn btn--ghost">Clear Current Run</button>
+        </div>
+
+        <section class="runtime" aria-live="polite">
+          <div>
+            <h3>Performance Timings</h3>
+            <pre id="timingsView" class="codeView">No run yet.</pre>
+          </div>
+          <div>
+            <h3>Event Timeline</h3>
+            <pre id="timelineView" class="codeView">No run yet.</pre>
+          </div>
+        </section>
+
+        <section>
+          <h3>Answer Cards</h3>
+          <div id="cards" class="cards"></div>
+        </section>
+
+        <section>
+          <div class="actions actions--spaceBetween">
+            <h3>Debug Bundle</h3>
+            <button id="copyDebugBtn" class="btn">Copy JSON</button>
+          </div>
+          <pre id="debugView" class="codeView">No run yet.</pre>
+        </section>
+      </section>
+
+      <section class="panel" id="library-panel" role="tabpanel" aria-hidden="true">
+        <div class="actions actions--spaceBetween">
+          <h2>Library</h2>
+          <button id="refreshLibraryBtn" class="btn">Refresh</button>
+        </div>
+        <div id="libraryList" class="library"></div>
+      </section>
+    </main>
+
+    <template id="libraryItemTemplate">
+      <article class="libraryItem">
+        <h3 class="libraryItem__title"></h3>
+        <p class="libraryItem__meta"></p>
+        <div class="actions">
+          <button class="btn js-open">Open in Setup</button>
+          <button class="btn js-select">Use in Ask</button>
+          <button class="btn btn--ghost js-delete">Delete</button>
+        </div>
+      </article>
+    </template>
+
+    <template id="cardTemplate">
+      <article class="card" tabindex="0">
+        <div class="card__mediaWrap">
+          <img class="card__media" alt="Generated answer card" />
+        </div>
+        <p class="card__text"></p>
+        <p class="card__badge"></p>
+      </article>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>
