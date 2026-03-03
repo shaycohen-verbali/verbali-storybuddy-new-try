@@ -67,7 +67,7 @@ export STORYBUDDY_REPLICATE_MODEL_NANO_BANANA_2=owner/model-or-version
 Optional Replicate settings:
 - `STORYBUDDY_REPLICATE_MODEL_PRO`
 - `STORYBUDDY_REPLICATE_MODEL_STANDARD`
-- `STORYBUDDY_REPLICATE_IDENTIFIER_FIELD` (`version` or `model`, default `version`)
+- `STORYBUDDY_REPLICATE_IDENTIFIER_FIELD` (`model` or `version`, default `model`)
 - `STORYBUDDY_REPLICATE_PROMPT_FIELD` (default `prompt`)
 - `STORYBUDDY_REPLICATE_EXTRA_INPUT_JSON` (JSON object merged into `input`)
 - `STORYBUDDY_REPLICATE_BASE_URL` (default `https://api.replicate.com/v1`)

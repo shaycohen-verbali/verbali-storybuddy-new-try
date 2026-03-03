@@ -179,7 +179,7 @@ async def _generate_image_replicate(
             "Replicate model identifier missing. Set STORYBUDDY_REPLICATE_MODEL_NANO_BANANA_2 or STORYBUDDY_REPLICATE_MODEL."
         )
 
-    id_field = os.getenv("STORYBUDDY_REPLICATE_IDENTIFIER_FIELD", "version").strip().lower() or "version"
+    id_field = os.getenv("STORYBUDDY_REPLICATE_IDENTIFIER_FIELD", "model").strip().lower() or "model"
     if id_field not in {"version", "model"}:
         raise RuntimeError("STORYBUDDY_REPLICATE_IDENTIFIER_FIELD must be 'version' or 'model'")
 
