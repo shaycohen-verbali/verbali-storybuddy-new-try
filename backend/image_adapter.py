@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 from textwrap import shorten
 from typing import Dict, List
@@ -97,6 +98,13 @@ async def generate_image(
             raise RuntimeError("image generation response missing b64_json")
         return f"data:image/png;base64,{b64}"
 
+    if provider == "replicate":
+        return await _generate_image_replicate(
+            prompt=prompt,
+            model=model,
+            style_ref_summaries=style_ref_summaries,
+        )
+
     raise RuntimeError(f"unsupported STORYBUDDY_IMAGE_PROVIDER: {provider}")
 
 
@@ -109,3 +117,115 @@ def generate_mock_image(
 ) -> str:
     seed = f"{model}|{scene}|{','.join(characters)}|{prompt[:120]}"
     return _mock_svg_data_url(prompt, scene, characters, seed)
+
+
+def _replicate_model_identifier(model: str) -> str:
+    slug = model.upper().replace("-", "_")
+    per_model = os.getenv(f"STORYBUDDY_REPLICATE_MODEL_{slug}", "").strip()
+    if per_model:
+        return per_model
+
+    generic = os.getenv("STORYBUDDY_REPLICATE_MODEL", "").strip()
+    if generic:
+        return generic
+
+    return ""
+
+
+def _first_image_url(output: object) -> str:
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        for item in output:
+            if isinstance(item, str):
+                return item
+    if isinstance(output, dict):
+        for value in output.values():
+            if isinstance(value, str) and value.startswith(("http://", "https://", "data:image/")):
+                return value
+    return ""
+
+
+async def _poll_replicate_prediction(
+    *,
+    client: httpx.AsyncClient,
+    get_url: str,
+    headers: Dict[str, str],
+) -> Dict[str, object]:
+    for _ in range(30):
+        poll = await client.get(get_url, headers=headers)
+        if poll.status_code >= 400:
+            raise RuntimeError(f"replicate polling failed ({poll.status_code}): {poll.text[:300]}")
+        data = poll.json()
+        status = data.get("status")
+        if status in {"succeeded", "failed", "canceled"}:
+            return data
+    raise RuntimeError("replicate prediction timed out while polling")
+
+
+async def _generate_image_replicate(
+    *,
+    prompt: str,
+    model: str,
+    style_ref_summaries: List[Dict[str, str]],
+) -> str:
+    token = os.getenv("REPLICATE_API_TOKEN", "").strip() or os.getenv("STORYBUDDY_IMAGE_API_KEY", "").strip()
+    if not token:
+        raise RuntimeError("REPLICATE_API_TOKEN (or STORYBUDDY_IMAGE_API_KEY) is required for replicate provider")
+
+    identifier = _replicate_model_identifier(model)
+    if not identifier:
+        raise RuntimeError(
+            "Replicate model identifier missing. Set STORYBUDDY_REPLICATE_MODEL_NANO_BANANA_2 or STORYBUDDY_REPLICATE_MODEL."
+        )
+
+    id_field = os.getenv("STORYBUDDY_REPLICATE_IDENTIFIER_FIELD", "version").strip().lower() or "version"
+    if id_field not in {"version", "model"}:
+        raise RuntimeError("STORYBUDDY_REPLICATE_IDENTIFIER_FIELD must be 'version' or 'model'")
+
+    prompt_field = os.getenv("STORYBUDDY_REPLICATE_PROMPT_FIELD", "prompt").strip() or "prompt"
+    base_url = os.getenv("STORYBUDDY_REPLICATE_BASE_URL", "https://api.replicate.com/v1").rstrip("/")
+    refs = ", ".join(ref["name"] for ref in style_ref_summaries[:2])
+
+    extra_input_raw = os.getenv("STORYBUDDY_REPLICATE_EXTRA_INPUT_JSON", "").strip()
+    extra_input = {}
+    if extra_input_raw:
+        try:
+            extra_input = json.loads(extra_input_raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Invalid STORYBUDDY_REPLICATE_EXTRA_INPUT_JSON: {exc}") from exc
+
+    payload = {
+        id_field: identifier,
+        "input": {
+            prompt_field: f"{prompt}\n\nUse style references: {refs}" if refs else prompt,
+            **extra_input,
+        },
+    }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Prefer": "wait=60",
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(f"{base_url}/predictions", headers=headers, json=payload)
+        if response.status_code >= 400:
+            raise RuntimeError(f"replicate request failed ({response.status_code}): {response.text[:500]}")
+        data = response.json()
+
+        status = data.get("status")
+        if status not in {"succeeded", "failed", "canceled"}:
+            get_url = ((data.get("urls") or {}).get("get") or "").strip()
+            if get_url:
+                data = await _poll_replicate_prediction(client=client, get_url=get_url, headers=headers)
+
+    if data.get("status") != "succeeded":
+        err = data.get("error") or data.get("status") or "unknown replicate failure"
+        raise RuntimeError(f"replicate generation failed: {err}")
+
+    image_url = _first_image_url(data.get("output"))
+    if not image_url:
+        raise RuntimeError("replicate succeeded but returned no image output")
+    return image_url

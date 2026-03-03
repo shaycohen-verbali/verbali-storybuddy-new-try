@@ -56,6 +56,22 @@ export STORYBUDDY_IMAGE_BASE_URL=https://api.openai.com/v1
 
 The app will call `/images/generations` with the selected model (`nano-banana-2`, `pro`, `standard`).
 
+To use Replicate (recommended for Nano Banana via Replicate):
+
+```bash
+export STORYBUDDY_IMAGE_PROVIDER=replicate
+export REPLICATE_API_TOKEN=YOUR_REPLICATE_TOKEN
+export STORYBUDDY_REPLICATE_MODEL_NANO_BANANA_2=owner/model-or-version
+```
+
+Optional Replicate settings:
+- `STORYBUDDY_REPLICATE_MODEL_PRO`
+- `STORYBUDDY_REPLICATE_MODEL_STANDARD`
+- `STORYBUDDY_REPLICATE_IDENTIFIER_FIELD` (`version` or `model`, default `version`)
+- `STORYBUDDY_REPLICATE_PROMPT_FIELD` (default `prompt`)
+- `STORYBUDDY_REPLICATE_EXTRA_INPUT_JSON` (JSON object merged into `input`)
+- `STORYBUDDY_REPLICATE_BASE_URL` (default `https://api.replicate.com/v1`)
+
 ## API endpoints
 
 - `GET /api/health`
