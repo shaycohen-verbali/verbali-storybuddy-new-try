@@ -32,9 +32,11 @@ def health() -> dict:
 def config() -> dict:
     provider = os.getenv("STORYBUDDY_IMAGE_PROVIDER", "mock").strip().lower() or "mock"
     has_api_key = bool(os.getenv("STORYBUDDY_IMAGE_API_KEY", "").strip())
+    base_url = os.getenv("STORYBUDDY_IMAGE_BASE_URL", "https://api.openai.com/v1").strip()
     return {
         "imageProvider": provider,
         "hasImageApiKey": has_api_key,
+        "imageBaseUrl": base_url,
     }
 
 

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from random import Random
 from typing import Dict, List, Tuple
 
-from .image_adapter import generate_image, get_image_provider
+from .image_adapter import generate_image, generate_mock_image, get_image_provider
 from .models import AnswerCard, AnswerOption, AskResponse, CardDebug, CharacterStyleMap, SetupIngestRequest, SetupIngestResponse, StoryPackage, StyleProfile, StyleRef
 
 try:
@@ -314,14 +314,23 @@ async def _generate_card(
             style_ref_summaries=style_refs_used,
         )
     except Exception as exc:
-        generation_error = str(exc)
-        image_data_url = await generate_image(
-            prompt=illustration_prompt,
-            model="standard",
-            scene=participants["scene"],
-            characters=participants["characters"],
-            style_ref_summaries=style_refs_used,
-        )
+        generation_error = f"primary generation failed: {exc}"
+        try:
+            image_data_url = await generate_image(
+                prompt=illustration_prompt,
+                model="standard",
+                scene=participants["scene"],
+                characters=participants["characters"],
+                style_ref_summaries=style_refs_used,
+            )
+        except Exception as fallback_exc:
+            generation_error = f"{generation_error}; fallback generation failed: {fallback_exc}"
+            image_data_url = generate_mock_image(
+                prompt=illustration_prompt,
+                model="standard",
+                scene=participants["scene"],
+                characters=participants["characters"],
+            )
     end(e)
 
     card_timing = {}

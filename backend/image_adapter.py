@@ -98,3 +98,14 @@ async def generate_image(
         return f"data:image/png;base64,{b64}"
 
     raise RuntimeError(f"unsupported STORYBUDDY_IMAGE_PROVIDER: {provider}")
+
+
+def generate_mock_image(
+    *,
+    prompt: str,
+    model: str,
+    scene: str,
+    characters: List[str],
+) -> str:
+    seed = f"{model}|{scene}|{','.join(characters)}|{prompt[:120]}"
+    return _mock_svg_data_url(prompt, scene, characters, seed)
