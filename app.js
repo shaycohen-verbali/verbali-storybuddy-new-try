@@ -96,7 +96,25 @@ function wireSetup() {
     }
 
     if (isPdf) {
-      setSetupNote("PDF selected. Text extraction will run during Save.");
+      setSetupNote("PDF selected. Extracting text...");
+      try {
+        const extraction = await extractPdfTextFromFile(file);
+        if (extraction.text && extraction.text.length >= 40) {
+          el.bookText.value = extraction.text;
+          if (!el.storyTitle.value.trim()) {
+            el.storyTitle.value = file.name.replace(/\.pdf$/i, "");
+          }
+          setSetupNote(
+            `Extracted text from PDF (${extraction.method}, ${extraction.pageCount} page${
+              extraction.pageCount === 1 ? "" : "s"
+            }).`
+          );
+        } else {
+          setSetupNote("PDF selected, but text extraction was too short. You can still click Save to try server extraction.");
+        }
+      } catch (err) {
+        setSetupNote(`PDF extraction failed in browser (${readError(err)}). You can still click Save to try server extraction.`);
+      }
       return;
     }
 
@@ -148,7 +166,7 @@ function wireSetup() {
         packageId: state.editingPackageId,
         storyTitle,
         bookText: el.bookText.value.trim() || null,
-        pdfBase64: isPdf ? await fileToDataUrl(file) : null,
+        pdfBase64: isPdf && !el.bookText.value.trim() ? await fileToDataUrl(file) : null,
         styleRefs,
         characterImageHints: buildCharacterImageHints(el.bookText.value, styleRefs),
       };
@@ -478,7 +496,14 @@ async function apiRequest(path, options = {}) {
   });
 
   const raw = await response.text();
-  const body = raw ? JSON.parse(raw) : null;
+  let body = null;
+  if (raw) {
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = { raw };
+    }
+  }
 
   if (!response.ok) {
     const message = body?.detail || body?.error || `${response.status} ${response.statusText}`;
@@ -499,4 +524,85 @@ function fileToDataUrl(file) {
     reader.onerror = () => reject(new Error("Failed to read file"));
     reader.readAsDataURL(file);
   });
+}
+
+async function extractPdfTextFromFile(file) {
+  const arrayBuffer = await file.arrayBuffer();
+
+  try {
+    const pdfJs = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs");
+    if (pdfJs.GlobalWorkerOptions) {
+      pdfJs.GlobalWorkerOptions.workerSrc =
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs";
+    }
+
+    const doc = await pdfJs.getDocument({ data: arrayBuffer }).promise;
+    const pages = [];
+    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+      const page = await doc.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item) => (typeof item.str === "string" ? item.str : ""))
+        .join(" ");
+      pages.push(`[Page ${pageNumber}] ${pageText}`);
+    }
+
+    return {
+      text: cleanExtractedText(pages.join("\n\n")),
+      pageCount: doc.numPages,
+      method: "pdf.js",
+    };
+  } catch {
+    return {
+      text: extractPdfTextHeuristic(arrayBuffer),
+      pageCount: 1,
+      method: "heuristic",
+    };
+  }
+}
+
+function extractPdfTextHeuristic(arrayBuffer) {
+  const source = new TextDecoder("latin1").decode(new Uint8Array(arrayBuffer));
+  const chunks = [];
+
+  const simpleTextOps = source.matchAll(/\(([^()]{2,260})\)\s*Tj/g);
+  for (const match of simpleTextOps) {
+    chunks.push(decodePdfLiteralString(match[1]));
+  }
+
+  const arrayTextOps = source.matchAll(/\[(.*?)\]\s*TJ/gs);
+  for (const match of arrayTextOps) {
+    const inner = match[1].matchAll(/\(([^()]*)\)/g);
+    for (const part of inner) {
+      chunks.push(decodePdfLiteralString(part[1]));
+    }
+  }
+
+  return cleanExtractedText(chunks.join(" "));
+}
+
+function decodePdfLiteralString(input) {
+  return input
+    .replace(/\\([nrtbf()\\])/g, (_, token) => {
+      const map = {
+        n: "\n",
+        r: "\r",
+        t: "\t",
+        b: "\b",
+        f: "\f",
+        "(": "(",
+        ")": ")",
+        "\\": "\\",
+      };
+      return map[token] || token;
+    })
+    .replace(/\\([0-7]{1,3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
+}
+
+function cleanExtractedText(text) {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/\[Page \d+\]\s*/g, (match) => `\n\n${match.trim()} `)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
+    .trim();
 }
