@@ -23,6 +23,8 @@ const el = {
   bookFile: document.getElementById("bookFile"),
   bookText: document.getElementById("bookText"),
   styleRefs: document.getElementById("styleRefs"),
+  styleRefList: document.getElementById("styleRefList"),
+  clearRefsBtn: document.getElementById("clearRefsBtn"),
   learnBtn: document.getElementById("learnBtn"),
   savePackageBtn: document.getElementById("savePackageBtn"),
   resetSetupBtn: document.getElementById("resetSetupBtn"),
@@ -106,6 +108,8 @@ function wireSetup() {
 
     if (isText) {
       el.bookText.value = await file.text();
+      removeBookPageRefs();
+      renderStyleRefEditor();
       setSetupNote("Loaded text file content.");
       return;
     }
@@ -114,6 +118,12 @@ function wireSetup() {
       setSetupNote("PDF selected. Extracting text...");
       try {
         const extraction = await extractPdfTextFromFile(file);
+        removeBookPageRefs();
+        const extractedRefs = (extraction.styleRefs || []).map((ref, idx) =>
+          normalizeStyleRef(ref, `book-${Date.now()}-${idx}`)
+        );
+        state.styleRefs = dedupeStyleRefs([...state.styleRefs, ...extractedRefs]);
+        renderStyleRefEditor();
         if (extraction.text && extraction.text.length >= 40) {
           el.bookText.value = extraction.text;
           if (!el.storyTitle.value.trim()) {
@@ -122,7 +132,7 @@ function wireSetup() {
           setSetupNote(
             `Extracted text from PDF (${extraction.method}, ${extraction.pageCount} page${
               extraction.pageCount === 1 ? "" : "s"
-            }).`
+            }). Added ${extractedRefs.length} reference image${extractedRefs.length === 1 ? "" : "s"} from book pages.`
           );
         } else {
           setSetupNote("PDF selected, but text extraction was too short. You can still click Save to try server extraction.");
@@ -138,15 +148,29 @@ function wireSetup() {
 
   el.styleRefs.addEventListener("change", async () => {
     const files = Array.from(el.styleRefs.files || []);
-    state.styleRefs = await Promise.all(
+    const loaded = await Promise.all(
       files.map(async (file, idx) => ({
         id: `style-${Date.now()}-${idx}`,
         name: file.name,
         dataUrl: await fileToDataUrl(file),
+        characterHints: [],
+        sceneHints: [],
+        sourceType: "manual",
+        pageNumber: null,
+        pageTextSnippet: "",
       }))
     );
+    state.styleRefs = dedupeStyleRefs([...state.styleRefs, ...loaded.map((ref, idx) => normalizeStyleRef(ref, `manual-${Date.now()}-${idx}`))]);
+    renderStyleRefEditor();
+    el.styleRefs.value = "";
 
-    setSetupNote(`Loaded ${state.styleRefs.length} style reference image${state.styleRefs.length === 1 ? "" : "s"}.`);
+    setSetupNote(`Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}. Total reference images: ${state.styleRefs.length}.`);
+  });
+
+  el.clearRefsBtn.addEventListener("click", () => {
+    state.styleRefs = [];
+    renderStyleRefEditor();
+    setSetupNote("Cleared all reference images.");
   });
 
   el.learnBtn.addEventListener("click", () => {
@@ -182,7 +206,7 @@ function wireSetup() {
         storyTitle,
         bookText: el.bookText.value.trim() || null,
         pdfBase64: isPdf && !el.bookText.value.trim() ? await fileToDataUrl(file) : null,
-        styleRefs,
+        styleRefs: styleRefs.map((ref, idx) => normalizeStyleRef(ref, `save-${idx}`)),
         characterImageHints: buildCharacterImageHints(el.bookText.value, styleRefs),
       };
 
@@ -192,8 +216,10 @@ function wireSetup() {
       });
 
       state.editingPackageId = result.package.id;
+      state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
+      renderStyleRefEditor();
       setSetupNote(
-        `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${result.learnedSummary.characterMappings} character-image mappings.`
+        `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${result.learnedSummary.characterMappings} character mappings, ${result.learnedSummary.sceneMappings || 0} scene mappings.`
       );
 
       await refreshPackages(result.package.id);
@@ -209,6 +235,8 @@ function wireSetup() {
     resetSetup();
     setSetupNote("Setup form reset.");
   });
+
+  renderStyleRefEditor();
 }
 
 function wireAsk() {
@@ -397,12 +425,13 @@ function loadPackageToSetup(packageId) {
   }
 
   state.editingPackageId = pkg.id;
-  state.styleRefs = pkg.style_refs || [];
+  state.styleRefs = (pkg.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `pkg-${idx}`));
   el.storyTitle.value = pkg.title || "";
   el.bookText.value = pkg.raw_text || "";
   el.bookFile.value = "";
+  renderStyleRefEditor();
   setSetupNote(
-    `Loaded ${pkg.title}. Character-image mappings: ${(pkg.character_style_map || []).filter((m) => (m.ref_ids || []).length).length}`
+    `Loaded ${pkg.title}. Character mappings: ${(pkg.character_style_map || []).filter((m) => (m.ref_ids || []).length).length}, Scene mappings: ${(pkg.scene_style_map || []).filter((m) => (m.ref_ids || []).length).length}`
   );
 }
 
@@ -458,6 +487,7 @@ function resetSetup() {
   el.bookText.value = "";
   el.bookFile.value = "";
   el.styleRefs.value = "";
+  renderStyleRefEditor();
 }
 
 function activateTab(name) {
@@ -488,22 +518,188 @@ function localAnalyze(text) {
 }
 
 function buildCharacterImageHints(text, styleRefs) {
-  const matches = text.match(/\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b/g) || [];
-  const characters = Array.from(new Set(matches)).filter((name) => !/^(The|A|An|And|But|When|Then)$/.test(name));
+  const characters = extractCharacterHintsFromText(text);
   const hints = {};
+
+  styleRefs.forEach((ref) => {
+    toHintList(ref.characterHints).forEach((character) => {
+      if (!hints[character]) {
+        hints[character] = [];
+      }
+      if (!hints[character].includes(ref.id)) {
+        hints[character].push(ref.id);
+      }
+    });
+  });
 
   characters.forEach((character) => {
     const tokens = character.toLowerCase().split(/\s+/);
     const ids = styleRefs
-      .filter((ref) => tokens.some((tok) => ref.name.toLowerCase().includes(tok)))
+      .filter((ref) => {
+        const blob = `${ref.name} ${ref.pageTextSnippet || ""}`.toLowerCase();
+        return tokens.some((tok) => blob.includes(tok));
+      })
       .map((ref) => ref.id)
       .slice(0, 2);
     if (ids.length) {
-      hints[character] = ids;
+      hints[character] = dedupeStrings([...(hints[character] || []), ...ids]).slice(0, 2);
     }
   });
 
   return hints;
+}
+
+function normalizeStyleRef(raw, fallbackId) {
+  const id = raw.id || fallbackId;
+  return {
+    id,
+    name: String(raw.name || id),
+    dataUrl: raw.dataUrl || raw.data_url || "",
+    characterHints: toHintList(raw.characterHints || raw.character_hints),
+    sceneHints: toHintList(raw.sceneHints || raw.scene_hints),
+    sourceType: String(raw.sourceType || raw.source_type || "manual"),
+    pageNumber: raw.pageNumber ?? raw.page_number ?? null,
+    pageTextSnippet: String(raw.pageTextSnippet || raw.page_text_snippet || ""),
+  };
+}
+
+function dedupeStyleRefs(refs) {
+  const seen = new Set();
+  const out = [];
+  refs.forEach((entry, idx) => {
+    const ref = normalizeStyleRef(entry, `style-${Date.now()}-${idx}`);
+    if (!ref.dataUrl) {
+      return;
+    }
+    if (seen.has(ref.id)) {
+      return;
+    }
+    seen.add(ref.id);
+    out.push(ref);
+  });
+  return out;
+}
+
+function toHintList(value) {
+  if (Array.isArray(value)) {
+    return dedupeStrings(value.map((v) => String(v).trim()).filter(Boolean));
+  }
+  if (typeof value === "string") {
+    return dedupeStrings(
+      value
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean)
+    );
+  }
+  return [];
+}
+
+function dedupeStrings(values) {
+  return Array.from(new Set(values));
+}
+
+function removeBookPageRefs() {
+  state.styleRefs = state.styleRefs.filter((ref) => ref.sourceType !== "book_page");
+}
+
+function renderStyleRefEditor() {
+  if (!el.styleRefList) {
+    return;
+  }
+  el.styleRefList.innerHTML = "";
+  if (!state.styleRefs.length) {
+    const empty = document.createElement("p");
+    empty.className = "inline-note";
+    empty.textContent = "No reference images yet. Upload images or a PDF to auto-extract page references.";
+    el.styleRefList.appendChild(empty);
+    return;
+  }
+
+  state.styleRefs.forEach((ref) => {
+    const card = document.createElement("article");
+    card.className = "styleRefItem";
+
+    const preview = document.createElement("img");
+    preview.className = "styleRefItem__preview";
+    preview.src = ref.dataUrl;
+    preview.alt = ref.name;
+
+    const fields = document.createElement("div");
+    fields.className = "styleRefItem__fields";
+
+    const sourceMeta = document.createElement("p");
+    sourceMeta.className = "styleRefItem__meta";
+    sourceMeta.textContent = `Source: ${ref.sourceType}${ref.pageNumber ? ` | Page ${ref.pageNumber}` : ""}`;
+    fields.appendChild(sourceMeta);
+
+    const nameInput = document.createElement("input");
+    nameInput.value = ref.name;
+    nameInput.placeholder = "Reference name";
+    nameInput.addEventListener("input", () => {
+      ref.name = nameInput.value.trim() || ref.id;
+    });
+    fields.appendChild(wrapRefField("Name", nameInput));
+
+    const charsInput = document.createElement("input");
+    charsInput.value = ref.characterHints.join(", ");
+    charsInput.placeholder = "Character hints (comma separated)";
+    charsInput.addEventListener("input", () => {
+      ref.characterHints = toHintList(charsInput.value);
+    });
+    fields.appendChild(wrapRefField("Character hints", charsInput));
+
+    const scenesInput = document.createElement("input");
+    scenesInput.value = ref.sceneHints.join(", ");
+    scenesInput.placeholder = "Scene hints (comma separated)";
+    scenesInput.addEventListener("input", () => {
+      ref.sceneHints = toHintList(scenesInput.value);
+    });
+    fields.appendChild(wrapRefField("Scene hints", scenesInput));
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn btn--ghost";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => {
+      state.styleRefs = state.styleRefs.filter((entry) => entry.id !== ref.id);
+      renderStyleRefEditor();
+    });
+    fields.appendChild(removeBtn);
+
+    card.appendChild(preview);
+    card.appendChild(fields);
+    el.styleRefList.appendChild(card);
+  });
+}
+
+function wrapRefField(label, inputEl) {
+  const wrapper = document.createElement("label");
+  wrapper.className = "field";
+  const title = document.createElement("span");
+  title.textContent = label;
+  wrapper.appendChild(title);
+  wrapper.appendChild(inputEl);
+  return wrapper;
+}
+
+function extractCharacterHintsFromText(text) {
+  const matches = (text || "").match(/\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b/g) || [];
+  return dedupeStrings(matches.map((name) => name.trim())).filter((name) => !/^(The|A|An|And|But|When|Then)$/.test(name));
+}
+
+function extractSceneHintsFromText(text) {
+  const source = String(text || "");
+  const scenes = [];
+  const regex = /\b(in|at|on|near|inside|outside|by)\b([^.!?,;\n]+)/gi;
+  let match;
+  while ((match = regex.exec(source))) {
+    scenes.push(`${match[1]} ${match[2].trim()}`.replace(/\s+/g, " "));
+    if (scenes.length >= 3) {
+      break;
+    }
+  }
+  return dedupeStrings(scenes);
 }
 
 async function apiRequest(path, options = {}) {
@@ -558,6 +754,8 @@ async function extractPdfTextFromFile(file) {
 
     const doc = await pdfJs.getDocument({ data: arrayBuffer }).promise;
     const pages = [];
+    const styleRefs = [];
+    const maxRefPages = Math.min(doc.numPages, 8);
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
       const page = await doc.getPage(pageNumber);
       const textContent = await page.getTextContent();
@@ -565,18 +763,44 @@ async function extractPdfTextFromFile(file) {
         .map((item) => (typeof item.str === "string" ? item.str : ""))
         .join(" ");
       pages.push(`[Page ${pageNumber}] ${pageText}`);
+
+      if (pageNumber <= maxRefPages) {
+        const viewport = page.getViewport({ scale: 1 });
+        const desiredWidth = 420;
+        const scale = Math.max(0.4, Math.min(1.1, desiredWidth / Math.max(1, viewport.width)));
+        const renderViewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(renderViewport.width));
+        canvas.height = Math.max(1, Math.floor(renderViewport.height));
+        const context = canvas.getContext("2d");
+        if (context) {
+          await page.render({ canvasContext: context, viewport: renderViewport }).promise;
+          styleRefs.push({
+            id: `book-page-${Date.now()}-${pageNumber}`,
+            name: `${file.name.replace(/\.pdf$/i, "")} page ${pageNumber}`,
+            dataUrl: canvas.toDataURL("image/jpeg", 0.86),
+            characterHints: extractCharacterHintsFromText(pageText).slice(0, 4),
+            sceneHints: extractSceneHintsFromText(pageText).slice(0, 3),
+            sourceType: "book_page",
+            pageNumber,
+            pageTextSnippet: pageText.slice(0, 180),
+          });
+        }
+      }
     }
 
     return {
       text: cleanExtractedText(pages.join("\n\n")),
       pageCount: doc.numPages,
       method: "pdf.js",
+      styleRefs,
     };
   } catch {
     return {
       text: extractPdfTextHeuristic(arrayBuffer),
       pageCount: 1,
       method: "heuristic",
+      styleRefs: [],
     };
   }
 }

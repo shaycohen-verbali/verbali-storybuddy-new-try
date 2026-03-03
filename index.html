@@ -48,6 +48,17 @@
           <input id="styleRefs" type="file" accept="image/*" multiple />
         </label>
 
+        <section>
+          <div class="actions actions--spaceBetween">
+            <h3>Reference Image Editor</h3>
+            <button id="clearRefsBtn" type="button" class="btn btn--ghost">Clear All References</button>
+          </div>
+          <p class="inline-note">
+            Edit names and hints so the system can map book images to characters and scenes before generating answer cards.
+          </p>
+          <div id="styleRefList" class="styleRefList"></div>
+        </section>
+
         <div class="actions">
           <button id="learnBtn" class="btn btn--accent">Learn Story Facts + Style</button>
           <button id="savePackageBtn" class="btn">Save Story Package</button>

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -102,6 +102,7 @@ async def generate_image(
     prompt: str,
     model: str,
     style_ref_images: List[str],
+    style_ref_labels: Optional[List[str]] = None,
     trace_id: str = "unknown",
 ) -> str:
     started_at = time.monotonic()
@@ -131,7 +132,7 @@ async def generate_image(
         "Prefer": f"wait={wait_seconds}",
     }
     logger.info(
-        "replicate request start trace=%s model=%s endpoint=%s wait=%ss pollAttempts=%s pollInterval=%ss refs=%s",
+        "replicate request start trace=%s model=%s endpoint=%s wait=%ss pollAttempts=%s pollInterval=%ss refs=%s refNames=%s",
         trace_id,
         canonical_model,
         endpoint,
@@ -139,6 +140,7 @@ async def generate_image(
         poll_max_attempts,
         poll_interval_seconds,
         len(image_inputs),
+        ", ".join((style_ref_labels or [])[:3]) if style_ref_labels else "none",
     )
 
     async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:

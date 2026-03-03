@@ -6,7 +6,7 @@ This v2 implementation adds a Python backend that handles:
 - story package ingestion from text or PDF
 - character/scene/object extraction
 - style profile extraction from reference images
-- character-to-style-reference mapping
+- character/scene-to-style-reference mapping
 - answer option generation with one fact-backed correct answer
 - per-card participant + style ref selection
 - replicate image generation (`nano-banana-2` / `nano-banana` / `nano-banana-pro`)
@@ -70,6 +70,7 @@ Optional setting:
 Ask behavior:
 - Each card calls Replicate directly with `prompt`, `image_input` (up to 3 style refs), `aspect_ratio=match_input_image`, and `output_format=jpg`.
 - If any card generation fails, `POST /api/ask` returns `502` (no fallback image path).
+- Style references now include source metadata and editable character/scene hints for better illustration consistency.
 
 ## API endpoints
 
@@ -85,7 +86,8 @@ Ask behavior:
 
 - PDF extraction in backend uses `pypdf`.
 - For scanned/image-only PDFs, provide OCR text manually in setup.
+- Setup includes a reference image editor so users can rename, remove, and adjust character/scene hints before saving.
 - Ask image generation is fail-fast: no OpenAI provider path and no mock fallback in the ask pipeline.
-- Replicate lifecycle logs are emitted in server logs with `trace=card-N` so timeout/failure is debuggable per card.
+- Replicate + pipeline logs include `trace=card-N` and explicit reference image names/ids used per card.
 - On Vercel serverless, package JSON files are stored in `/tmp` (ephemeral). For persistent storage, wire a real DB/blob store.
 - `POST /api/ask` now accepts either `packageId` or full `package` payload; frontend sends the full package to avoid serverless filesystem misses.

@@ -10,6 +10,11 @@ class StyleRef(BaseModel):
     id: str
     name: str
     data_url: str = Field(alias="dataUrl")
+    character_hints: List[str] = Field(default_factory=list, alias="characterHints")
+    scene_hints: List[str] = Field(default_factory=list, alias="sceneHints")
+    source_type: str = Field(default="manual", alias="sourceType")
+    page_number: Optional[int] = Field(default=None, alias="pageNumber")
+    page_text_snippet: Optional[str] = Field(default=None, alias="pageTextSnippet")
 
     class Config:
         populate_by_name = True
@@ -17,6 +22,12 @@ class StyleRef(BaseModel):
 
 class CharacterStyleMap(BaseModel):
     character: str
+    ref_ids: List[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
+class SceneStyleMap(BaseModel):
+    scene: str
     ref_ids: List[str] = Field(default_factory=list)
     confidence: float = 0.0
 
@@ -38,6 +49,7 @@ class StoryPackage(BaseModel):
     style_refs: List[StyleRef] = Field(default_factory=list)
     style_profile: StyleProfile = Field(default_factory=StyleProfile)
     character_style_map: List[CharacterStyleMap] = Field(default_factory=list)
+    scene_style_map: List[SceneStyleMap] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -96,7 +108,7 @@ class AnswerOption(BaseModel):
 class CardDebug(BaseModel):
     prompts: Dict[str, str]
     selected_participants: Dict[str, object] = Field(alias="selectedParticipants")
-    style_refs_used: List[Dict[str, str]] = Field(alias="styleRefsUsed")
+    style_refs_used: List[Dict[str, object]] = Field(alias="styleRefsUsed")
     image_model: str = Field(alias="modelUsed")
     image_provider: str = Field(alias="imageProvider")
     generation_error: Optional[str] = Field(alias="generationError", default=None)
