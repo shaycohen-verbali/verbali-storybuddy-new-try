@@ -129,7 +129,7 @@ def _replicate_model_identifier(model: str) -> str:
     if generic:
         return generic
 
-    return ""
+    return model
 
 
 def _first_image_url(output: object) -> str:
