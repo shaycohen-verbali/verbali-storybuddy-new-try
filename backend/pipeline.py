@@ -634,39 +634,19 @@ def build_illustration_prompt(
     participants: Dict[str, object],
     style_refs_used: List[Dict[str, object]],
 ) -> str:
-    ref_name_by_id = {ref.id: ref.name for ref in package.style_refs}
-    char_map_rows = []
-    for character in participants["characters"]:
-        row = next((m for m in package.character_style_map if m.character == character), None)
-        if not row:
-            continue
-        refs = ", ".join(ref_name_by_id.get(ref_id, ref_id) for ref_id in row.ref_ids) if row.ref_ids else "none"
-        char_map_rows.append(f"{character}->{refs}")
-
-    scene_row = next(
-        (m for m in package.scene_style_map if normalize(m.scene) == normalize(str(participants["scene"]))),
-        None,
-    )
-    scene_map_note = "use default scene framing"
-    if scene_row:
-        scene_map_note = ", ".join(ref_name_by_id.get(ref_id, ref_id) for ref_id in scene_row.ref_ids) or scene_map_note
-
-    refs = ", ".join(
-        f"{ref.get('name')} (reason={ref.get('reason')}, source={ref.get('sourceType')}, page={ref.get('pageNumber')})"
-        for ref in style_refs_used
-    ) or "package style profile"
-    mapping_note = "; ".join(char_map_rows) or "use canonical character appearance"
-    palette = ", ".join(package.style_profile.dominant_palette)
+    refs = ", ".join(str(ref.get("name", "")).strip() for ref in style_refs_used if str(ref.get("name", "")).strip()) or "book refs"
+    style_notes = ", ".join(package.style_profile.notes[:3]) or "storybook"
+    palette = ", ".join(package.style_profile.dominant_palette[:3]) or "book palette"
+    scene = str(participants.get("scene", "main story setting"))
+    chars = ", ".join(participants.get("characters", []) or []) or "main cast"
 
     return (
-        f"Create a child-friendly answer card illustration. "
-        f"Book title: {package.title}. Question: {question}. Answer text: {option.text}. "
-        f"Scene: {participants['scene']}. Characters: {', '.join(participants['characters']) or 'main cast'}. "
-        f"Objects: {', '.join(participants['objects']) or 'storybook props'}. "
-        f"Style notes: {', '.join(package.style_profile.notes)}. Palette: {palette}. "
-        f"Style refs: {refs}. Character-to-ref mapping: {mapping_note}. Scene-to-ref mapping: {scene_map_note}. "
-        "Use the provided reference images (image_input) to match line style, palette, character appearance, and scene composition. "
-        "Keep composition simple and highly recognizable for non-verbal child selection."
+        "Illustrate a child-friendly answer card in the exact style of the provided reference images. "
+        f"Answer concept: {option.text}. Scene: {scene}. Characters: {chars}. "
+        f"Book style cues: {style_notes}. Palette: {palette}. "
+        f"Reference images: {refs}. "
+        "Keep character appearance and scene look consistent with the book. "
+        "Use clear, simple composition for non-verbal child recognition."
     )
 
 

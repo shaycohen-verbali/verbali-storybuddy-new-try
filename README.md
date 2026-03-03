@@ -65,10 +65,14 @@ Optional setting:
 - `STORYBUDDY_REPLICATE_WAIT_SECONDS` (default `20`, max `55`)
 - `STORYBUDDY_REPLICATE_POLL_INTERVAL_SECONDS` (default `1.0`)
 - `STORYBUDDY_REPLICATE_POLL_MAX_ATTEMPTS` (default `24`)
+- `STORYBUDDY_CARD_ASPECT_RATIO` (`4:3` default, or `1:1`)
+- `STORYBUDDY_REF_MAX_WIDTH` (default `896`)
+- `STORYBUDDY_REF_JPEG_QUALITY` (default `78`)
 - `STORYBUDDY_LOG_LEVEL` (default `INFO`)
 
 Ask behavior:
-- Each card calls Replicate directly with `prompt`, `image_input` (up to 3 style refs), `aspect_ratio=match_input_image`, and `output_format=jpg`.
+- Each card calls Replicate directly with `prompt`, `image_input` (up to 3 style refs), fixed card `aspect_ratio` (`4:3` default), and `output_format=jpg`.
+- Reference images are compressed/downscaled before send to reduce model-side timeouts.
 - If any card generation fails, `POST /api/ask` returns `502` (no fallback image path).
 - Style references now include source metadata and editable character/scene hints for better illustration consistency.
 
