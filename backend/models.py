@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class StyleRef(BaseModel):
@@ -66,7 +66,19 @@ class AskRequest(BaseModel):
     package_id: Optional[str] = Field(default=None, alias="packageId")
     package: Optional[StoryPackage] = None
     question: str
-    model: Literal["nano-banana-2", "pro", "standard"] = "nano-banana-2"
+    model: Literal["nano-banana-2", "nano-banana", "nano-banana-pro"] = "nano-banana-2"
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def normalize_model_aliases(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
+        if normalized == "pro":
+            return "nano-banana-pro"
+        if normalized == "standard":
+            return "nano-banana"
+        return normalized
 
     class Config:
         populate_by_name = True

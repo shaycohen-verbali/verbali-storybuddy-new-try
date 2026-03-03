@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from random import Random
 from typing import Dict, List, Tuple
 
-from .image_adapter import generate_image, generate_mock_image, get_image_provider
+from .image_adapter import canonicalize_model, generate_image
 from .models import AnswerCard, AnswerOption, AskResponse, CardDebug, CharacterStyleMap, SetupIngestRequest, SetupIngestResponse, StoryPackage, StyleProfile, StyleRef
 
 try:
@@ -31,6 +31,14 @@ STOP_WORDS = {
     "over", "same", "some", "such", "than", "that", "their", "them", "then", "there", "these", "they", "this",
     "those", "through", "very", "what", "when", "where", "which", "while", "with", "would",
 }
+
+
+class CardImageGenerationError(RuntimeError):
+    def __init__(self, *, card_id: str, model: str, detail: str):
+        self.card_id = card_id
+        self.model = model
+        self.detail = detail
+        super().__init__(f"{card_id} image generation failed for model {model}: {detail}")
 
 
 def _utc_now() -> datetime:
@@ -216,20 +224,27 @@ async def run_ask_pipeline(package: StoryPackage, question: str, model: str) -> 
     options = generate_answer_options(package, transcript)
     end(t)
 
+    resolved_model = canonicalize_model(model)
+
     fanout = begin("image_fanout", "main", {"cardCount": 3})
     tasks = [
         _generate_card(
             package=package,
             question=transcript,
             option=option,
-            model=model,
+            model=resolved_model,
             lane=f"card-{idx}",
             t0=t0,
             timeline=timeline,
         )
         for idx, option in enumerate(options, start=1)
     ]
-    cards = await asyncio.gather(*tasks)
+    try:
+        cards = await asyncio.gather(*tasks)
+    except CardImageGenerationError:
+        raise
+    except Exception as exc:
+        raise CardImageGenerationError(card_id="card-unknown", model=resolved_model, detail=str(exc)) from exc
     end(fanout)
 
     t = begin("last_image_interactive", "main")
@@ -241,7 +256,7 @@ async def run_ask_pipeline(package: StoryPackage, question: str, model: str) -> 
         "request": {
             "storyPackageId": package.id,
             "storyTitle": package.title,
-            "model": model,
+            "model": resolved_model,
             "transcript": transcript,
         },
         "options": [
@@ -285,7 +300,6 @@ async def _generate_card(
     t0: float,
     timeline: List[Dict[str, object]],
 ) -> AnswerCard:
-    image_provider = get_image_provider()
     def begin(event: str, meta: Dict[str, object] | None = None) -> Dict[str, object]:
         item = {
             "event": event,
@@ -314,34 +328,16 @@ async def _generate_card(
     illustration_prompt = build_illustration_prompt(package, question, option, participants, style_refs_used)
     end(e)
 
-    generation_error = None
     e = begin("image_generation", {"model": model})
+    style_ref_images = select_style_ref_images(package, style_refs_used)
     try:
         image_data_url = await generate_image(
             prompt=illustration_prompt,
             model=model,
-            scene=participants["scene"],
-            characters=participants["characters"],
-            style_ref_summaries=style_refs_used,
+            style_ref_images=style_ref_images,
         )
     except Exception as exc:
-        generation_error = f"primary generation failed: {exc}"
-        try:
-            image_data_url = await generate_image(
-                prompt=illustration_prompt,
-                model="standard",
-                scene=participants["scene"],
-                characters=participants["characters"],
-                style_ref_summaries=style_refs_used,
-            )
-        except Exception as fallback_exc:
-            generation_error = f"{generation_error}; fallback generation failed: {fallback_exc}"
-            image_data_url = generate_mock_image(
-                prompt=illustration_prompt,
-                model="standard",
-                scene=participants["scene"],
-                characters=participants["characters"],
-            )
+        raise CardImageGenerationError(card_id=lane, model=model, detail=str(exc)) from exc
     end(e)
 
     card_timing = {}
@@ -375,8 +371,8 @@ async def _generate_card(
             selectedParticipants=participants,
             styleRefsUsed=style_refs_used,
             modelUsed=model,
-            imageProvider=image_provider,
-            generationError=generation_error,
+            imageProvider="replicate",
+            generationError=None,
             supportFact=option.support_fact,
         ),
     )
@@ -467,6 +463,19 @@ def select_style_refs(package: StoryPackage, participants: Dict[str, object]) ->
 
     ref_lookup = {r.id: r for r in package.style_refs}
     return [{"id": rid, "name": ref_lookup[rid].name} for rid in chosen_ids if rid in ref_lookup][:3]
+
+
+def select_style_ref_images(package: StoryPackage, refs_used: List[Dict[str, str]]) -> List[str]:
+    ref_lookup = {r.id: r for r in package.style_refs}
+    out: List[str] = []
+    for ref in refs_used[:3]:
+        ref_id = ref.get("id")
+        if not isinstance(ref_id, str):
+            continue
+        row = ref_lookup.get(ref_id)
+        if row and row.data_url:
+            out.append(row.data_url)
+    return out
 
 
 def build_illustration_prompt(

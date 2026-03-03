@@ -60,8 +60,10 @@ async function init() {
   setupSpeech();
   await refreshPackages();
   clearRun();
-  if (state.runtimeConfig?.imageProvider === "mock") {
-    setSetupNote("Image provider is currently mock. Configure STORYBUDDY_IMAGE_PROVIDER and STORYBUDDY_IMAGE_API_KEY for real model generation.");
+  if (state.runtimeConfig && !state.runtimeConfig.replicateConfigured) {
+    const message = "Replicate is not configured. Set REPLICATE_API_TOKEN to generate images.";
+    setSetupNote(message);
+    el.timingsView.textContent = message;
   }
 }
 
@@ -224,6 +226,10 @@ function wireAsk() {
       el.timingsView.textContent = "Enter or dictate a question first.";
       return;
     }
+    if (state.runtimeConfig && !state.runtimeConfig.replicateConfigured) {
+      el.timingsView.textContent = "Replicate is not configured. Add REPLICATE_API_TOKEN and redeploy.";
+      return;
+    }
 
     el.generateBtn.disabled = true;
     el.generateBtn.textContent = "Generating...";
@@ -236,7 +242,7 @@ function wireAsk() {
       state.latestDebugBundle = result.debugBundle;
       renderAskResult(result);
     } catch (err) {
-      el.timingsView.textContent = `Ask failed: ${readError(err)}`;
+      el.timingsView.textContent = `Ask failed: ${readError(err)}. Check REPLICATE_API_TOKEN and Replicate model access.`;
     } finally {
       el.generateBtn.disabled = false;
       el.generateBtn.textContent = "Generate 3 Answer Cards";

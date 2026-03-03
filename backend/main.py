@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .models import AskRequest, AskResponse, SetupIngestRequest, SetupIngestResponse, StoryPackage
-from .pipeline import ingest_setup, run_ask_pipeline
+from .pipeline import CardImageGenerationError, ingest_setup, run_ask_pipeline
 from .storage import delete_package, list_packages, load_package, save_package
 
 app = FastAPI(title="StoryBuddy API", version="2.0.0")
@@ -30,17 +30,12 @@ def health() -> dict:
 
 @app.get("/api/config")
 def config() -> dict:
-    provider = os.getenv("STORYBUDDY_IMAGE_PROVIDER", "mock").strip().lower() or "mock"
-    has_api_key = bool(os.getenv("STORYBUDDY_IMAGE_API_KEY", "").strip())
     has_replicate_token = bool(os.getenv("REPLICATE_API_TOKEN", "").strip())
-    base_url = os.getenv("STORYBUDDY_IMAGE_BASE_URL", "https://api.openai.com/v1").strip()
     replicate_base_url = os.getenv("STORYBUDDY_REPLICATE_BASE_URL", "https://api.replicate.com/v1").strip()
     return {
-        "imageProvider": provider,
-        "hasImageApiKey": has_api_key,
         "hasReplicateToken": has_replicate_token,
-        "imageBaseUrl": base_url,
         "replicateBaseUrl": replicate_base_url,
+        "replicateConfigured": has_replicate_token,
     }
 
 
@@ -91,7 +86,13 @@ async def ask(req: AskRequest) -> AskResponse:
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question is required")
 
-    return await run_ask_pipeline(package, req.question, req.model)
+    try:
+        return await run_ask_pipeline(package, req.question, req.model)
+    except CardImageGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Replicate image generation failed for {exc.card_id} using {exc.model}: {exc.detail}",
+        ) from exc
 
 
 app.mount("/", StaticFiles(directory=str(BASE_DIR), html=True), name="frontend")

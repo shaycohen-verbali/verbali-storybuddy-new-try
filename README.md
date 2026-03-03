@@ -9,7 +9,7 @@ This v2 implementation adds a Python backend that handles:
 - character-to-style-reference mapping
 - answer option generation with one fact-backed correct answer
 - per-card participant + style ref selection
-- model-adapter image generation (`nano-banana-2` / `pro` / `standard`)
+- replicate image generation (`nano-banana-2` / `nano-banana` / `nano-banana-pro`)
 - full debug bundle + telemetry timeline
 
 ## Architecture
@@ -43,34 +43,29 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 ## Image model configuration
 
-Default mode is mock (safe local fallback):
-- `STORYBUDDY_IMAGE_PROVIDER=mock`
+StoryBuddy ask flow is Replicate-only and fail-fast for image generation.
 
-To use a real OpenAI-compatible image endpoint:
-
-```bash
-export STORYBUDDY_IMAGE_PROVIDER=openai_compatible
-export STORYBUDDY_IMAGE_API_KEY=YOUR_KEY
-export STORYBUDDY_IMAGE_BASE_URL=https://api.openai.com/v1
-```
-
-The app will call `/images/generations` with the selected model (`nano-banana-2`, `pro`, `standard`).
-
-To use Replicate (recommended for Nano Banana via Replicate):
+Required:
 
 ```bash
-export STORYBUDDY_IMAGE_PROVIDER=replicate
 export REPLICATE_API_TOKEN=YOUR_REPLICATE_TOKEN
-export STORYBUDDY_REPLICATE_MODEL_NANO_BANANA_2=owner/model-or-version
 ```
 
-Optional Replicate settings:
-- `STORYBUDDY_REPLICATE_MODEL_PRO`
-- `STORYBUDDY_REPLICATE_MODEL_STANDARD`
-- `STORYBUDDY_REPLICATE_IDENTIFIER_FIELD` (`model` or `version`, default `model`)
-- `STORYBUDDY_REPLICATE_PROMPT_FIELD` (default `prompt`)
-- `STORYBUDDY_REPLICATE_EXTRA_INPUT_JSON` (JSON object merged into `input`)
+Supported models:
+- `nano-banana-2` -> `google/nano-banana-2`
+- `nano-banana` -> `google/nano-banana`
+- `nano-banana-pro` -> `google/nano-banana-pro`
+
+Legacy aliases accepted by API:
+- `standard` -> `nano-banana`
+- `pro` -> `nano-banana-pro`
+
+Optional setting:
 - `STORYBUDDY_REPLICATE_BASE_URL` (default `https://api.replicate.com/v1`)
+
+Ask behavior:
+- Each card calls Replicate directly with `prompt`, `image_input` (up to 3 style refs), `aspect_ratio=match_input_image`, and `output_format=jpg`.
+- If any card generation fails, `POST /api/ask` returns `502` (no fallback image path).
 
 ## API endpoints
 
@@ -86,6 +81,6 @@ Optional Replicate settings:
 
 - PDF extraction in backend uses `pypdf`.
 - For scanned/image-only PDFs, provide OCR text manually in setup.
-- If real image generation fails, backend falls back to mock image generation and records the error in card debug payload.
+- Ask image generation is fail-fast: no OpenAI provider path and no mock fallback in the ask pipeline.
 - On Vercel serverless, package JSON files are stored in `/tmp` (ephemeral). For persistent storage, wire a real DB/blob store.
 - `POST /api/ask` now accepts either `packageId` or full `package` payload; frontend sends the full package to avoid serverless filesystem misses.
