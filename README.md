@@ -1,41 +1,73 @@
-# StoryBuddy MVP
+# StoryBuddy v2
 
-A zero-dependency browser MVP of StoryBuddy for non-verbal reading-comprehension workflows.
+StoryBuddy is an AI reading-comprehension app for non-verbal children.
 
-## What this app does
+This v2 implementation adds a Python backend that handles:
+- story package ingestion from text or PDF
+- character/scene/object extraction
+- style profile extraction from reference images
+- character-to-style-reference mapping
+- answer option generation with one fact-backed correct answer
+- per-card participant + style ref selection
+- model-adapter image generation (`nano-banana-2` / `pro` / `standard`)
+- full debug bundle + telemetry timeline
 
-- Setup flow to create reusable story packages from story text.
-- Optional style/reference image upload per package.
-- Local library to reopen/update/delete packages.
-- Ask flow with typed question or browser speech recognition.
-- Generates exactly 3 answer cards with one `isCorrect: true` option (fact-backed from learned story facts).
-- Per-card generated illustration (simulated image model) in a stable story-style palette.
-- Full debug bundle per card:
-  - prompts
-  - selected participants
-  - style refs used
-  - model used
-  - generation errors
-- Performance telemetry:
-  - step timings
-  - per-card timings
-  - event timeline from t0 to "last image interactive"
+## Architecture
+
+- Frontend: `index.html`, `styles.css`, `app.js`
+- Backend API: `backend/main.py` (FastAPI)
+- Vercel API entry: `api/index.py`
+- Pipeline logic: `backend/pipeline.py`
+- Model adapter: `backend/image_adapter.py`
+- Package storage: `backend_data/packages/*.json`
 
 ## Local run
 
-From the project directory:
+1. Install dependencies:
 
 ```bash
-python3 -m http.server 8000
+cd /tmp/verbali-storybuddy-new-try
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Then open:
+2. Run backend + frontend on one server:
 
-- http://localhost:8000/index.html
+```bash
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+3. Open:
+- http://localhost:8000
+
+## Image model configuration
+
+Default mode is mock (safe local fallback):
+- `STORYBUDDY_IMAGE_PROVIDER=mock`
+
+To use a real OpenAI-compatible image endpoint:
+
+```bash
+export STORYBUDDY_IMAGE_PROVIDER=openai_compatible
+export STORYBUDDY_IMAGE_API_KEY=YOUR_KEY
+export STORYBUDDY_IMAGE_BASE_URL=https://api.openai.com/v1
+```
+
+The app will call `/images/generations` with the selected model (`nano-banana-2`, `pro`, `standard`).
+
+## API endpoints
+
+- `GET /api/health`
+- `GET /api/packages`
+- `GET /api/packages/{package_id}`
+- `DELETE /api/packages/{package_id}`
+- `POST /api/setup/ingest`
+- `POST /api/ask`
 
 ## Notes
 
-- This MVP stores story packages in browser `localStorage`.
-- PDF upload now attempts automatic extraction in-browser (`pdf.js` via CDN), then falls back to a heuristic parser if CDN loading fails.
-- For scanned/image-only PDFs, paste OCR/extracted text manually for best results.
-- Image generation is simulated client-side (canvas) while preserving package-specific style consistency and debug metadata.
+- PDF extraction in backend uses `pypdf`.
+- For scanned/image-only PDFs, provide OCR text manually in setup.
+- If real image generation fails, backend falls back to mock image generation and records the error in card debug payload.
+- On Vercel serverless, package JSON files are stored in `/tmp` (ephemeral). For persistent storage, wire a real DB/blob store.
