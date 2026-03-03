@@ -335,6 +335,7 @@ async def _generate_card(
             prompt=illustration_prompt,
             model=model,
             style_ref_images=style_ref_images,
+            trace_id=lane,
         )
     except Exception as exc:
         raise CardImageGenerationError(card_id=lane, model=model, detail=str(exc)) from exc

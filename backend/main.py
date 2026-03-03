@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import os
 
@@ -11,6 +12,7 @@ from .models import AskRequest, AskResponse, SetupIngestRequest, SetupIngestResp
 from .pipeline import CardImageGenerationError, ingest_setup, run_ask_pipeline
 from .storage import delete_package, list_packages, load_package, save_package
 
+logging.basicConfig(level=os.getenv("STORYBUDDY_LOG_LEVEL", "INFO"))
 app = FastAPI(title="StoryBuddy API", version="2.0.0")
 BASE_DIR = Path(__file__).resolve().parent.parent
 

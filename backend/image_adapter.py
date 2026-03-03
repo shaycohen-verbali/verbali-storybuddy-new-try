@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import time
 from typing import Dict, List
 
 import httpx
+
+logger = logging.getLogger("storybuddy.image")
 
 
 MODEL_SLUGS: Dict[str, str] = {
@@ -62,18 +66,35 @@ async def _poll_replicate_prediction(
     headers: Dict[str, str],
     max_attempts: int,
     poll_interval_seconds: float,
+    trace_id: str,
 ) -> Dict[str, object]:
+    last_status = "unknown"
+    prediction_id = "unknown"
     for attempt in range(max_attempts):
         poll = await client.get(get_url, headers=headers)
         if poll.status_code >= 400:
             raise RuntimeError(f"replicate polling failed ({poll.status_code}): {poll.text[:300]}")
         data = poll.json()
-        status = data.get("status")
+        status = str(data.get("status") or "unknown")
+        prediction_id = str(data.get("id") or prediction_id)
+        last_status = status
+        logger.info(
+            "replicate poll trace=%s prediction=%s attempt=%s/%s status=%s",
+            trace_id,
+            prediction_id,
+            attempt + 1,
+            max_attempts,
+            status,
+        )
         if status in {"succeeded", "failed", "canceled"}:
             return data
         if attempt < max_attempts - 1:
             await asyncio.sleep(poll_interval_seconds)
-    raise RuntimeError("replicate prediction timed out while polling")
+    raise RuntimeError(
+        "replicate prediction timed out while polling "
+        f"(trace={trace_id}, prediction={prediction_id}, lastStatus={last_status}, "
+        f"attempts={max_attempts}, intervalSeconds={poll_interval_seconds})"
+    )
 
 
 async def generate_image(
@@ -81,7 +102,9 @@ async def generate_image(
     prompt: str,
     model: str,
     style_ref_images: List[str],
+    trace_id: str = "unknown",
 ) -> str:
+    started_at = time.monotonic()
     token = os.getenv("REPLICATE_API_TOKEN", "").strip()
     if not token:
         raise RuntimeError("REPLICATE_API_TOKEN is required")
@@ -89,9 +112,10 @@ async def generate_image(
     canonical_model = canonicalize_model(model)
     owner, name = MODEL_SLUGS[canonical_model].split("/", 1)
     base_url = os.getenv("STORYBUDDY_REPLICATE_BASE_URL", "https://api.replicate.com/v1").rstrip("/")
-    wait_seconds = max(1, min(20, int(os.getenv("STORYBUDDY_REPLICATE_WAIT_SECONDS", "8"))))
+    wait_seconds = max(1, min(55, int(os.getenv("STORYBUDDY_REPLICATE_WAIT_SECONDS", "20"))))
     poll_interval_seconds = max(0.5, float(os.getenv("STORYBUDDY_REPLICATE_POLL_INTERVAL_SECONDS", "1.0")))
-    poll_max_attempts = max(1, min(30, int(os.getenv("STORYBUDDY_REPLICATE_POLL_MAX_ATTEMPTS", "12"))))
+    poll_max_attempts = max(1, min(60, int(os.getenv("STORYBUDDY_REPLICATE_POLL_MAX_ATTEMPTS", "24"))))
+    request_timeout_seconds = max(40.0, float(wait_seconds + 20))
 
     image_inputs = [ref for ref in style_ref_images if isinstance(ref, str) and ref.strip()][:3]
     input_payload: Dict[str, object] = {
@@ -106,12 +130,29 @@ async def generate_image(
         "Content-Type": "application/json",
         "Prefer": f"wait={wait_seconds}",
     }
+    logger.info(
+        "replicate request start trace=%s model=%s endpoint=%s wait=%ss pollAttempts=%s pollInterval=%ss refs=%s",
+        trace_id,
+        canonical_model,
+        endpoint,
+        wait_seconds,
+        poll_max_attempts,
+        poll_interval_seconds,
+        len(image_inputs),
+    )
 
-    async with httpx.AsyncClient(timeout=35.0) as client:
+    async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
         response = await client.post(endpoint, headers=headers, json={"input": input_payload})
         if response.status_code >= 400:
             raise RuntimeError(f"replicate request failed ({response.status_code}): {response.text[:500]}")
         data = response.json()
+        prediction_id = str(data.get("id") or "unknown")
+        logger.info(
+            "replicate request accepted trace=%s prediction=%s status=%s",
+            trace_id,
+            prediction_id,
+            data.get("status"),
+        )
 
         status = data.get("status")
         if status not in {"succeeded", "failed", "canceled"}:
@@ -123,15 +164,29 @@ async def generate_image(
                     headers=headers,
                     max_attempts=poll_max_attempts,
                     poll_interval_seconds=poll_interval_seconds,
+                    trace_id=trace_id,
                 )
             else:
                 raise RuntimeError("replicate prediction is pending and no polling URL was returned")
 
     if data.get("status") != "succeeded":
         err = data.get("error") or data.get("status") or "unknown replicate failure"
+        logger.error(
+            "replicate generation failed trace=%s prediction=%s status=%s error=%s",
+            trace_id,
+            data.get("id"),
+            data.get("status"),
+            err,
+        )
         raise RuntimeError(f"replicate generation failed: {err}")
 
     image_url = _first_image_url(data.get("output"))
     if not image_url:
         raise RuntimeError("replicate succeeded but returned no image output")
+    logger.info(
+        "replicate generation success trace=%s prediction=%s elapsedMs=%s",
+        trace_id,
+        data.get("id"),
+        int((time.monotonic() - started_at) * 1000),
+    )
     return image_url

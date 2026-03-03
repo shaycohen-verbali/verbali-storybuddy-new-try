@@ -62,6 +62,10 @@ Legacy aliases accepted by API:
 
 Optional setting:
 - `STORYBUDDY_REPLICATE_BASE_URL` (default `https://api.replicate.com/v1`)
+- `STORYBUDDY_REPLICATE_WAIT_SECONDS` (default `20`, max `55`)
+- `STORYBUDDY_REPLICATE_POLL_INTERVAL_SECONDS` (default `1.0`)
+- `STORYBUDDY_REPLICATE_POLL_MAX_ATTEMPTS` (default `24`)
+- `STORYBUDDY_LOG_LEVEL` (default `INFO`)
 
 Ask behavior:
 - Each card calls Replicate directly with `prompt`, `image_input` (up to 3 style refs), `aspect_ratio=match_input_image`, and `output_format=jpg`.
@@ -82,5 +86,6 @@ Ask behavior:
 - PDF extraction in backend uses `pypdf`.
 - For scanned/image-only PDFs, provide OCR text manually in setup.
 - Ask image generation is fail-fast: no OpenAI provider path and no mock fallback in the ask pipeline.
+- Replicate lifecycle logs are emitted in server logs with `trace=card-N` so timeout/failure is debuggable per card.
 - On Vercel serverless, package JSON files are stored in `/tmp` (ephemeral). For persistent storage, wire a real DB/blob store.
 - `POST /api/ask` now accepts either `packageId` or full `package` payload; frontend sends the full package to avoid serverless filesystem misses.
