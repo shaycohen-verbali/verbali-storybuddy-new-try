@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -167,8 +168,10 @@ async def _poll_replicate_prediction(
     client: httpx.AsyncClient,
     get_url: str,
     headers: Dict[str, str],
+    max_attempts: int,
+    poll_interval_seconds: float,
 ) -> Dict[str, object]:
-    for _ in range(30):
+    for attempt in range(max_attempts):
         poll = await client.get(get_url, headers=headers)
         if poll.status_code >= 400:
             raise RuntimeError(f"replicate polling failed ({poll.status_code}): {poll.text[:300]}")
@@ -176,6 +179,8 @@ async def _poll_replicate_prediction(
         status = data.get("status")
         if status in {"succeeded", "failed", "canceled"}:
             return data
+        if attempt < max_attempts - 1:
+            await asyncio.sleep(poll_interval_seconds)
     raise RuntimeError("replicate prediction timed out while polling")
 
 
@@ -201,6 +206,9 @@ async def _generate_image_replicate(
 
     prompt_field = os.getenv("STORYBUDDY_REPLICATE_PROMPT_FIELD", "prompt").strip() or "prompt"
     base_url = os.getenv("STORYBUDDY_REPLICATE_BASE_URL", "https://api.replicate.com/v1").rstrip("/")
+    wait_seconds = max(1, min(20, int(os.getenv("STORYBUDDY_REPLICATE_WAIT_SECONDS", "8"))))
+    poll_interval_seconds = max(0.5, float(os.getenv("STORYBUDDY_REPLICATE_POLL_INTERVAL_SECONDS", "1.0")))
+    poll_max_attempts = max(1, min(30, int(os.getenv("STORYBUDDY_REPLICATE_POLL_MAX_ATTEMPTS", "12"))))
     refs = ", ".join(ref["name"] for ref in style_ref_summaries[:2])
 
     extra_input_raw = os.getenv("STORYBUDDY_REPLICATE_EXTRA_INPUT_JSON", "").strip()
@@ -231,10 +239,10 @@ async def _generate_image_replicate(
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "Prefer": "wait=60",
+        "Prefer": f"wait={wait_seconds}",
     }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=35.0) as client:
         response = await client.post(endpoint, headers=headers, json=payload)
         if response.status_code >= 400:
             raise RuntimeError(f"replicate request failed ({response.status_code}): {response.text[:500]}")
@@ -244,7 +252,15 @@ async def _generate_image_replicate(
         if status not in {"succeeded", "failed", "canceled"}:
             get_url = ((data.get("urls") or {}).get("get") or "").strip()
             if get_url:
-                data = await _poll_replicate_prediction(client=client, get_url=get_url, headers=headers)
+                data = await _poll_replicate_prediction(
+                    client=client,
+                    get_url=get_url,
+                    headers=headers,
+                    max_attempts=poll_max_attempts,
+                    poll_interval_seconds=poll_interval_seconds,
+                )
+            else:
+                raise RuntimeError("replicate prediction is pending and no polling URL was returned")
 
     if data.get("status") != "succeeded":
         err = data.get("error") or data.get("status") or "unknown replicate failure"

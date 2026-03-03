@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import re
@@ -216,9 +217,19 @@ async def run_ask_pipeline(package: StoryPackage, question: str, model: str) -> 
     end(t)
 
     fanout = begin("image_fanout", "main", {"cardCount": 3})
-    cards: List[AnswerCard] = []
-    for idx, option in enumerate(options, start=1):
-        cards.append(await _generate_card(package=package, question=transcript, option=option, model=model, lane=f"card-{idx}", t0=t0, timeline=timeline))
+    tasks = [
+        _generate_card(
+            package=package,
+            question=transcript,
+            option=option,
+            model=model,
+            lane=f"card-{idx}",
+            t0=t0,
+            timeline=timeline,
+        )
+        for idx, option in enumerate(options, start=1)
+    ]
+    cards = await asyncio.gather(*tasks)
     end(fanout)
 
     t = begin("last_image_interactive", "main")
