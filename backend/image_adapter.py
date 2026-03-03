@@ -133,16 +133,32 @@ def _replicate_model_identifier(model: str) -> str:
 
 
 def _first_image_url(output: object) -> str:
-    if isinstance(output, str):
-        return output
-    if isinstance(output, list):
-        for item in output:
-            if isinstance(item, str):
-                return item
-    if isinstance(output, dict):
-        for value in output.values():
-            if isinstance(value, str) and value.startswith(("http://", "https://", "data:image/")):
+    def extract(value: object) -> str:
+        if isinstance(value, str):
+            if value.startswith(("http://", "https://", "data:image/")):
                 return value
+            return ""
+        if isinstance(value, list):
+            for item in value:
+                found = extract(item)
+                if found:
+                    return found
+            return ""
+        if isinstance(value, dict):
+            # Common Replicate shape: {"url": "..."}
+            direct = value.get("url")
+            if isinstance(direct, str) and direct.startswith(("http://", "https://", "data:image/")):
+                return direct
+            for item in value.values():
+                found = extract(item)
+                if found:
+                    return found
+            return ""
+        return ""
+
+    found = extract(output)
+    if found:
+        return found
     return ""
 
 
@@ -195,13 +211,22 @@ async def _generate_image_replicate(
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"Invalid STORYBUDDY_REPLICATE_EXTRA_INPUT_JSON: {exc}") from exc
 
-    payload = {
-        id_field: identifier,
-        "input": {
-            prompt_field: f"{prompt}\n\nUse style references: {refs}" if refs else prompt,
-            **extra_input,
-        },
+    input_payload = {
+        prompt_field: f"{prompt}\n\nUse style references: {refs}" if refs else prompt,
+        **extra_input,
     }
+
+    if id_field == "model":
+        if "/" not in identifier:
+            raise RuntimeError(
+                "Replicate model identifier must be in owner/model format when STORYBUDDY_REPLICATE_IDENTIFIER_FIELD=model"
+            )
+        owner, name = identifier.split("/", 1)
+        endpoint = f"{base_url}/models/{owner}/{name}/predictions"
+        payload = {"input": input_payload}
+    else:
+        endpoint = f"{base_url}/predictions"
+        payload = {"version": identifier, "input": input_payload}
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -210,7 +235,7 @@ async def _generate_image_replicate(
     }
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(f"{base_url}/predictions", headers=headers, json=payload)
+        response = await client.post(endpoint, headers=headers, json=payload)
         if response.status_code >= 400:
             raise RuntimeError(f"replicate request failed ({response.status_code}): {response.text[:500]}")
         data = response.json()
