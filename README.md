@@ -7,7 +7,7 @@ This v2 implementation adds a Python backend that handles:
 - character/scene/object extraction
 - style profile extraction from reference images
 - character/scene-to-style-reference mapping
-- answer option generation with one fact-backed correct answer
+- answer option generation with one fact-backed correct answer (including character-list question handling)
 - per-card participant + style ref selection
 - replicate image generation (`nano-banana-2` / `nano-banana` / `nano-banana-pro`)
 - full debug bundle + telemetry timeline
@@ -90,7 +90,10 @@ Ask behavior:
 
 - PDF extraction in backend uses `pypdf`.
 - For scanned/image-only PDFs, provide OCR text manually in setup.
+- Browser PDF reference extraction now crops text-heavy sidebars and prefers illustration regions.
 - Setup includes a reference image editor so users can rename, remove, and adjust character/scene hints before saving.
+- Library packages are cached in browser local storage so refresh keeps recent books when serverless storage is empty.
+- Ask UI includes a live elapsed timer from click until all card images are loaded.
 - Ask image generation is fail-fast: no OpenAI provider path and no mock fallback in the ask pipeline.
 - Replicate + pipeline logs include `trace=card-N` and explicit reference image names/ids used per card.
 - On Vercel serverless, package JSON files are stored in `/tmp` (ephemeral). For persistent storage, wire a real DB/blob store.

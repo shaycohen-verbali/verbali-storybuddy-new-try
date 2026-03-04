@@ -129,10 +129,10 @@ def extract_text_from_pdf_base64(pdf_b64: str) -> str:
 
 
 def analyze_book_text(text: str) -> Dict[str, List[str]]:
-    cleaned = clean_text(text)
+    cleaned = clean_text(strip_page_markers(text))
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
 
-    facts = [truncate(s, 200) for s in sentences[:40]]
+    facts = [truncate(strip_page_markers(s), 200) for s in sentences[:40]]
     characters = extract_characters(cleaned)[:12]
     objects = extract_objects(cleaned, characters)[:20]
     scenes = extract_scenes(sentences)[:12]
@@ -526,6 +526,12 @@ def summarize_step_timings(timeline: List[Dict[str, object]]) -> Dict[str, int]:
 
 
 def generate_answer_options(package: StoryPackage, question: str) -> List[AnswerOption]:
+    special = generate_special_answer_options(package, question)
+    if special:
+        rnd = Random(hash(question) & 0xFFFFFFFF)
+        rnd.shuffle(special)
+        return special
+
     facts = package.facts[:30]
     scored = sorted(((score_fact_against_question(f, question), f) for f in facts), reverse=True)
     correct_fact = scored[0][1] if scored else (facts[0] if facts else "")
@@ -568,6 +574,56 @@ def resolve_participants(package: StoryPackage, option_text: str, support_fact: 
         "characters": chars,
         "objects": objects,
     }
+
+
+def generate_special_answer_options(package: StoryPackage, question: str) -> List[AnswerOption] | None:
+    q = question.lower()
+    asks_main_characters = ("character" in q or "characters" in q) and ("main" in q or "who" in q or "what" in q)
+    asks_three = bool(re.search(r"\b(three|3)\b", q))
+    if not asks_main_characters:
+        return None
+
+    characters = [name for name in package.characters if name and len(name) > 1][:6]
+    if len(characters) < 2:
+        return None
+
+    target_count = 3 if asks_three else min(3, len(characters))
+    correct_names = characters[:target_count]
+    correct_text = format_name_list(correct_names)
+
+    supporting = []
+    for name in correct_names:
+        fact = next((f for f in package.facts if re.search(rf"\b{re.escape(name)}\b", f, flags=re.I)), "")
+        if fact:
+            supporting.append(strip_page_markers(fact))
+    support_fact = " | ".join(supporting[:3]) or f"Main characters in the story include: {correct_text}."
+
+    pool = dedupe(characters[target_count:] + [capitalize(obj) for obj in package.objects[:6]] + ["Someone else", "Another character"])
+    if not pool:
+        pool = ["Someone else", "Another character", "A classmate"]
+
+    def make_wrong(seed: int) -> str:
+        picks: List[str] = []
+        for idx in range(target_count):
+            candidate = pool[(seed + idx) % len(pool)]
+            if candidate not in picks:
+                picks.append(candidate)
+        while len(picks) < target_count:
+            picks.append(f"Extra {len(picks)+1}")
+        return format_name_list(picks[:target_count])
+
+    wrong1 = make_wrong(0)
+    wrong2 = make_wrong(2 if len(pool) > 2 else 1)
+    if normalize(wrong1) == normalize(correct_text):
+        wrong1 = make_wrong(1)
+    if normalize(wrong2) in {normalize(correct_text), normalize(wrong1)}:
+        wrong2 = make_wrong(3)
+
+    return [
+        AnswerOption(text=correct_text, isCorrect=True, supportFact=support_fact),
+        AnswerOption(text=wrong1, isCorrect=False, supportFact="Distractor option"),
+        AnswerOption(text=wrong2, isCorrect=False, supportFact="Distractor option"),
+    ]
 
 
 def select_style_refs(package: StoryPackage, participants: Dict[str, object]) -> List[Dict[str, object]]:
@@ -653,7 +709,7 @@ def build_illustration_prompt(
 def extract_characters(text: str) -> List[str]:
     banned = {
         "The", "A", "An", "And", "But", "Then", "When", "After", "Before", "In", "On", "At", "He", "She", "They",
-        "It", "We", "I",
+        "It", "We", "I", "Page", "Back", "Every", "Tuesday", "Thursday",
     }
     matches = re.findall(r"\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b", text)
     counts = Counter(tok for tok in matches if tok not in banned)
@@ -702,23 +758,24 @@ def score_fact_against_question(fact: str, question: str) -> int:
 
 def answer_from_fact(question: str, fact: str, package: StoryPackage) -> str:
     q = question.lower()
+    fact_clean = strip_page_markers(fact)
 
     if "who" in q:
         for name in package.characters:
-            if name.lower() in fact.lower():
+            if name.lower() in fact_clean.lower():
                 return name
 
     if "where" in q:
-        m = re.search(r"\b(in|at|on|near|inside|outside|by)\b([^.!?,;]+)", fact, flags=re.I)
+        m = re.search(r"\b(in|at|on|near|inside|outside|by)\b([^.!?,;]+)", fact_clean, flags=re.I)
         if m:
             return capitalize(f"{m.group(1)} {m.group(2).strip()}")
 
     if "what" in q:
         for obj in package.objects:
-            if obj.lower() in fact.lower():
+            if obj.lower() in fact_clean.lower():
                 return capitalize(obj)
 
-    words = re.sub(r"[^a-zA-Z0-9\s]", "", fact).split()
+    words = re.sub(r"[^a-zA-Z0-9\s]", "", fact_clean).split()
     return capitalize(" ".join(words[:8])) if words else "From the story"
 
 
@@ -747,6 +804,21 @@ def tokenize(text: str) -> List[str]:
 
 def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().strip())
+
+
+def strip_page_markers(text: str) -> str:
+    return re.sub(r"\[Page\s+\d+\]", " ", text, flags=re.I)
+
+
+def format_name_list(values: List[str]) -> str:
+    items = [v.strip() for v in values if v and v.strip()]
+    if not items:
+        return "No characters found"
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
 
 
 def truncate(text: str, max_len: int) -> str:

@@ -4,6 +4,10 @@ const state = {
   styleRefs: [],
   latestDebugBundle: null,
   runtimeConfig: null,
+  askTimer: {
+    startedAt: 0,
+    intervalId: null,
+  },
   speech: {
     recognition: null,
     listening: false,
@@ -11,6 +15,7 @@ const state = {
 };
 
 const API_BASE = window.STORYBUDDY_API_BASE || "";
+const PACKAGE_CACHE_KEY = "storybuddy.packages.v1";
 
 const el = {
   tabs: Array.from(document.querySelectorAll(".tab")),
@@ -37,6 +42,7 @@ const el = {
   speechStatus: document.getElementById("speechStatus"),
   generateBtn: document.getElementById("generateBtn"),
   clearRunBtn: document.getElementById("clearRunBtn"),
+  askElapsed: document.getElementById("askElapsed"),
   timingsView: document.getElementById("timingsView"),
   timelineView: document.getElementById("timelineView"),
   cards: document.getElementById("cards"),
@@ -218,6 +224,7 @@ function wireSetup() {
       state.editingPackageId = result.package.id;
       state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
       renderStyleRefEditor();
+      upsertCachedPackage(result.package);
       setSetupNote(
         `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${result.learnedSummary.characterMappings} character mappings, ${result.learnedSummary.sceneMappings || 0} scene mappings.`
       );
@@ -261,6 +268,8 @@ function wireAsk() {
 
     el.generateBtn.disabled = true;
     el.generateBtn.textContent = "Generating...";
+    startAskTimer();
+    const askStartedAt = performance.now();
 
     try {
       const result = await apiRequest("/api/ask", {
@@ -268,9 +277,11 @@ function wireAsk() {
         body: JSON.stringify({ packageId, package: selectedPackage, question, model }),
       });
       state.latestDebugBundle = result.debugBundle;
-      renderAskResult(result);
+      await renderAskResult(result);
+      stopAskTimer(performance.now() - askStartedAt);
     } catch (err) {
       el.timingsView.textContent = `Ask failed: ${readError(err)}. Check REPLICATE_API_TOKEN and Replicate model access.`;
+      stopAskTimer(performance.now() - askStartedAt);
     } finally {
       el.generateBtn.disabled = false;
       el.generateBtn.textContent = "Generate 3 Answer Cards";
@@ -350,8 +361,18 @@ function setupSpeech() {
 }
 
 async function refreshPackages(preferredId = "") {
-  const packages = await apiRequest("/api/packages");
+  let packages = [];
+  try {
+    const remote = await apiRequest("/api/packages");
+    packages = Array.isArray(remote) ? remote : [];
+  } catch {
+    packages = [];
+  }
+  if (!packages.length) {
+    packages = loadCachedPackages();
+  }
   state.packages = Array.isArray(packages) ? packages : [];
+  saveCachedPackages(state.packages);
   renderPackageSelect(preferredId);
   renderLibrary();
 }
@@ -403,14 +424,22 @@ function renderLibrary() {
     });
 
     node.querySelector(".js-delete").addEventListener("click", async () => {
+      let deletedRemotely = false;
       try {
         await apiRequest(`/api/packages/${pkg.id}`, { method: "DELETE" });
-        if (state.editingPackageId === pkg.id) {
-          resetSetup();
-        }
-        await refreshPackages();
+        deletedRemotely = true;
       } catch (err) {
-        setSetupNote(`Delete failed: ${readError(err)}`);
+        setSetupNote(`Delete not found on server. Removing local copy only (${readError(err)}).`);
+      }
+      removeCachedPackage(pkg.id);
+      state.packages = state.packages.filter((entry) => entry.id !== pkg.id);
+      if (state.editingPackageId === pkg.id) {
+        resetSetup();
+      }
+      renderPackageSelect();
+      renderLibrary();
+      if (deletedRemotely) {
+        await refreshPackages();
       }
     });
 
@@ -441,9 +470,46 @@ function clearRun() {
   el.debugView.textContent = "No run yet.";
   el.cards.innerHTML = "";
   state.latestDebugBundle = null;
+  setAskElapsed(0);
 }
 
-function renderAskResult(result) {
+function waitForImageLoad(img, src) {
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    img.addEventListener("load", done, { once: true });
+    img.addEventListener("error", done, { once: true });
+    img.src = src;
+  });
+}
+
+function startAskTimer() {
+  stopAskTimer(null);
+  state.askTimer.startedAt = performance.now();
+  setAskElapsed(0);
+  state.askTimer.intervalId = setInterval(() => {
+    setAskElapsed(performance.now() - state.askTimer.startedAt);
+  }, 100);
+}
+
+function stopAskTimer(finalMs) {
+  if (state.askTimer.intervalId) {
+    clearInterval(state.askTimer.intervalId);
+    state.askTimer.intervalId = null;
+  }
+  if (typeof finalMs === "number") {
+    setAskElapsed(finalMs);
+  }
+}
+
+function setAskElapsed(ms) {
+  if (!el.askElapsed) {
+    return;
+  }
+  const seconds = Math.max(0, ms) / 1000;
+  el.askElapsed.textContent = `Elapsed: ${seconds.toFixed(2)}s`;
+}
+
+async function renderAskResult(result) {
   const stepTimings = result.telemetry?.stepTimings || result.telemetry?.step_timings || {};
   el.timingsView.textContent = JSON.stringify(stepTimings, null, 2);
 
@@ -453,13 +519,14 @@ function renderAskResult(result) {
     .join("\n");
 
   el.cards.innerHTML = "";
+  const imageLoadPromises = [];
   (result.cards || []).forEach((card) => {
     const node = el.cardTemplate.content.firstElementChild.cloneNode(true);
     const image = node.querySelector(".card__media");
     const text = node.querySelector(".card__text");
     const badge = node.querySelector(".card__badge");
 
-    image.src = card.imageDataUrl;
+    imageLoadPromises.push(waitForImageLoad(image, card.imageDataUrl));
     text.textContent = card.text;
     badge.textContent = "Tap to select";
 
@@ -473,6 +540,9 @@ function renderAskResult(result) {
     el.cards.appendChild(node);
   });
 
+  if (imageLoadPromises.length) {
+    await Promise.allSettled(imageLoadPromises);
+  }
   el.debugView.textContent = JSON.stringify(result.debugBundle || {}, null, 2);
 }
 
@@ -702,6 +772,39 @@ function extractSceneHintsFromText(text) {
   return dedupeStrings(scenes);
 }
 
+function loadCachedPackages() {
+  try {
+    const raw = localStorage.getItem(PACKAGE_CACHE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedPackages(packages) {
+  try {
+    localStorage.setItem(PACKAGE_CACHE_KEY, JSON.stringify(Array.isArray(packages) ? packages : []));
+  } catch {
+    // Ignore localStorage write failures.
+  }
+}
+
+function upsertCachedPackage(pkg) {
+  const current = loadCachedPackages();
+  const filtered = current.filter((entry) => entry.id !== pkg.id);
+  const next = [pkg, ...filtered];
+  saveCachedPackages(next);
+}
+
+function removeCachedPackage(packageId) {
+  const next = loadCachedPackages().filter((entry) => entry.id !== packageId);
+  saveCachedPackages(next);
+}
+
 async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
@@ -775,10 +878,11 @@ async function extractPdfTextFromFile(file) {
         const context = canvas.getContext("2d");
         if (context) {
           await page.render({ canvasContext: context, viewport: renderViewport }).promise;
+          const artDataUrl = extractIllustrationDataUrl(canvas, textContent.items || []);
           styleRefs.push({
             id: `book-page-${Date.now()}-${pageNumber}`,
             name: `${file.name.replace(/\.pdf$/i, "")} page ${pageNumber}`,
-            dataUrl: canvas.toDataURL("image/jpeg", 0.86),
+            dataUrl: artDataUrl,
             characterHints: extractCharacterHintsFromText(pageText).slice(0, 4),
             sceneHints: extractSceneHintsFromText(pageText).slice(0, 3),
             sourceType: "book_page",
@@ -849,4 +953,109 @@ function cleanExtractedText(text) {
     .replace(/\[Page \d+\]\s*/g, (match) => `\n\n${match.trim()} `)
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
     .trim();
+}
+
+function extractIllustrationDataUrl(canvas, textItems) {
+  const width = canvas.width;
+  const height = canvas.height;
+  if (!width || !height) {
+    return canvas.toDataURL("image/jpeg", 0.82);
+  }
+
+  const colDensity = Array(width).fill(0);
+  const rowDensity = Array(height).fill(0);
+
+  (textItems || []).forEach((item) => {
+    const str = typeof item.str === "string" ? item.str.trim() : "";
+    if (!str) {
+      return;
+    }
+    const tr = Array.isArray(item.transform) ? item.transform : [];
+    const x = Number(tr[4] || 0);
+    const y = Number(tr[5] || 0);
+    const w = Math.max(1, Math.ceil(Number(item.width || 0)));
+    const h = Math.max(8, Math.ceil(Math.abs(Number(tr[3] || item.height || 10))));
+
+    const x0 = clampInt(Math.floor(x), 0, width - 1);
+    const x1 = clampInt(Math.ceil(x + w), x0 + 1, width);
+    const yTop = clampInt(Math.floor(height - y - h), 0, height - 1);
+    const yBottom = clampInt(Math.ceil(height - y + h * 0.2), yTop + 1, height);
+
+    for (let xi = x0; xi < x1; xi += 1) {
+      colDensity[xi] += 1;
+    }
+    for (let yi = yTop; yi < yBottom; yi += 1) {
+      rowDensity[yi] += 1;
+    }
+  });
+
+  let cropX = 0;
+  let cropW = width;
+  const horizontalCrop = findSparseRegionBySplit(colDensity, 0.45, 1.7);
+  if (horizontalCrop) {
+    cropX = horizontalCrop.start;
+    cropW = horizontalCrop.end - horizontalCrop.start;
+  }
+
+  let cropY = 0;
+  let cropH = height;
+  const verticalCrop = findSparseRegionBySplit(rowDensity, 0.55, 1.4);
+  if (verticalCrop) {
+    cropY = verticalCrop.start;
+    cropH = verticalCrop.end - verticalCrop.start;
+  }
+
+  if (cropW * cropH < width * height * 0.45) {
+    return canvas.toDataURL("image/jpeg", 0.82);
+  }
+
+  const out = document.createElement("canvas");
+  out.width = cropW;
+  out.height = cropH;
+  const ctx = out.getContext("2d");
+  if (!ctx) {
+    return canvas.toDataURL("image/jpeg", 0.82);
+  }
+  ctx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  return out.toDataURL("image/jpeg", 0.82);
+}
+
+function findSparseRegionBySplit(density, minFraction, ratioThreshold) {
+  const len = density.length;
+  const minSide = Math.max(1, Math.floor(len * minFraction));
+  const start = Math.floor(len * 0.2);
+  const end = Math.ceil(len * 0.8);
+  const step = Math.max(4, Math.floor(len / 50));
+  const prefix = [0];
+  for (let i = 0; i < len; i += 1) {
+    prefix.push(prefix[prefix.length - 1] + density[i]);
+  }
+
+  let best = null;
+  for (let split = start; split <= end; split += step) {
+    const leftLen = split;
+    const rightLen = len - split;
+    if (leftLen < minSide && rightLen < minSide) {
+      continue;
+    }
+    const leftAvg = leftLen > 0 ? (prefix[split] - prefix[0]) / leftLen : Number.POSITIVE_INFINITY;
+    const rightAvg = rightLen > 0 ? (prefix[len] - prefix[split]) / rightLen : Number.POSITIVE_INFINITY;
+
+    if (rightLen >= minSide && leftAvg > rightAvg * ratioThreshold) {
+      if (!best || rightAvg < best.score) {
+        best = { start: split, end: len, score: rightAvg };
+      }
+    }
+    if (leftLen >= minSide && rightAvg > leftAvg * ratioThreshold) {
+      if (!best || leftAvg < best.score) {
+        best = { start: 0, end: split, score: leftAvg };
+      }
+    }
+  }
+
+  return best ? { start: best.start, end: best.end } : null;
+}
+
+function clampInt(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
