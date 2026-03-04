@@ -141,7 +141,7 @@ function wireSetup() {
     const mappedCharacters = (result.package.character_style_map || []).filter((m) => (m.ref_ids || []).length).length;
     if (saved) {
       setSetupNote(
-        `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${mappedCharacters} character-image mappings, ${result.learnedSummary.sceneMappings || 0} scene mappings.`
+        `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${mappedCharacters} character-image mappings, ${result.learnedSummary.sceneMappings || 0} scene-setting mappings.`
       );
     } else {
       setSetupNote(
@@ -331,7 +331,7 @@ function wireSetup() {
     state.sceneImageHints = buildAutoSceneImageHints(el.bookText.value, state.styleRefs, deriveSceneList());
     ensureSceneMappingCoverage();
     renderSceneMapEditor();
-    setSetupNote("Auto-mapped scenes to reference images.");
+    setSetupNote("Auto-mapped scene settings to reference images.");
   });
 
   el.bookText.addEventListener("input", () => {
@@ -653,7 +653,7 @@ function loadPackageToSetup(packageId) {
   renderCharacterMapEditor();
   renderSceneMapEditor();
   setSetupNote(
-    `Loaded ${pkg.title}. Character-image mappings: ${(pkg.character_style_map || []).filter((m) => (m.ref_ids || []).length).length}, Scene mappings: ${(pkg.scene_style_map || []).filter((m) => (m.ref_ids || []).length).length}`
+    `Loaded ${pkg.title}. Character-image mappings: ${(pkg.character_style_map || []).filter((m) => (m.ref_ids || []).length).length}, Scene-setting mappings: ${(pkg.scene_style_map || []).filter((m) => (m.ref_ids || []).length).length}`
   );
 }
 
@@ -1494,7 +1494,7 @@ function renderSceneMapEditor() {
   if (!scenes.length) {
     const empty = document.createElement("p");
     empty.className = "inline-note";
-    empty.textContent = "No scenes detected yet. Add book text or save the package first.";
+    empty.textContent = "No scene settings detected yet. Add book text or save the package first.";
     el.sceneMapList.appendChild(empty);
     return;
   }
@@ -1502,7 +1502,7 @@ function renderSceneMapEditor() {
   if (!state.styleRefs.length) {
     const note = document.createElement("p");
     note.className = "inline-note";
-    note.textContent = "No reference images yet. Add an image per scene below or upload global references above.";
+    note.textContent = "No reference images yet. Add an image per setting below or upload global references above.";
     el.sceneMapList.appendChild(note);
   }
 
@@ -1553,7 +1553,7 @@ function renderSceneMapEditor() {
     charRow.className = "sceneMapItem__meta";
     charRow.textContent = sceneCharacters.length
       ? `Characters: ${sceneCharacters.slice(0, 6).join(", ")}`
-      : "Characters: none detected";
+      : "Characters: none detected for this setting";
     fields.appendChild(charRow);
 
     const status = document.createElement("p");
@@ -1668,15 +1668,33 @@ function extractCharacterHintsFromText(text) {
 function extractSceneHintsFromText(text) {
   const source = String(text || "");
   const scenes = [];
+  const seen = new Set();
   const regex = /\b(in|at|on|near|inside|outside|by)\b([^.!?,;\n]+)/gi;
   let match;
   while ((match = regex.exec(source))) {
-    scenes.push(`${match[1]} ${match[2].trim()}`.replace(/\s+/g, " "));
+    let scene = `${match[1]} ${match[2].trim()}`.replace(/\s+/g, " ");
+    scene = scene.split(/\b(and|but|because|which|that|who|while|then)\b/i)[0].trim();
+    if (!scene) {
+      continue;
+    }
+    if (scene.split(/\s+/).length > 10) {
+      scene = scene
+        .split(/\s+/)
+        .slice(0, 10)
+        .join(" ");
+    }
+    scene = scene[0].toUpperCase() + scene.slice(1);
+    const key = scene.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    scenes.push(scene);
     if (scenes.length >= 12) {
       break;
     }
   }
-  return dedupeStrings(scenes);
+  return scenes;
 }
 
 function loadCachedPackages() {

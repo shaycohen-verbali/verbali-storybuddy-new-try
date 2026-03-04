@@ -64,9 +64,13 @@ def _clean_scene_name(name: str) -> str:
     out = re.sub(r"\s+", " ", str(name or "").strip())
     out = out.strip(" .,:;")
     out = re.sub(r"[\x00-\x1F]", "", out)
+    # Keep scene names as location settings ("In the hallway", "At lunch", etc.).
+    out = re.sub(r"^(scene|setting)\s*[:\-]\s*", "", out, flags=re.I).strip()
     words = out.split()
     if len(words) > 10:
         out = " ".join(words[:10])
+    if out and not re.match(r"^(in|at|on|near|inside|outside|by)\b", out, flags=re.I):
+        out = f"In {out}"
     if out and out[:1].islower():
         out = out[:1].upper() + out[1:]
     return out
@@ -110,6 +114,12 @@ def _looks_like_noise(scene_name: str) -> bool:
     lowered = scene_name.lower()
     if len(lowered) < 4:
         return True
+    if len(lowered.split()) > 10:
+        return True
+    if not re.match(r"^(in|at|on|near|inside|outside|by)\b", lowered):
+        return True
+    if re.search(r"\b(he|she|they|his|her|their|i|we|you)\b", lowered):
+        return True
     banned = [
         "copyright",
         "all rights reserved",
@@ -117,6 +127,9 @@ def _looks_like_noise(scene_name: str) -> bool:
         "published",
         "isbn",
         "page",
+        "chapter",
+        "table of contents",
+        "author",
     ]
     return any(token in lowered for token in banned)
 
@@ -147,16 +160,18 @@ def extract_scene_profiles_with_gemini(
     chars_blob = ", ".join(characters[:20]) or "none"
     hints_blob = ", ".join(heuristic_scenes[:20]) or "none"
     prompt = (
-        "Extract core scenes from this children's story and attach participating characters.\n"
+        "Extract story SETTINGS (locations where events happen) from this children's story and attach participating characters.\n"
         "Return ONLY valid JSON with this exact shape:\n"
         '{"scenes":[{"name":"...","description":"...","characters":["..."]}]}\n'
         "Rules:\n"
-        "- Include recurring visual story scenes only (max 12).\n"
+        "- Include recurring location settings only (max 12).\n"
         "- Exclude title-page, copyright, and publisher boilerplate.\n"
-        "- name: concise scene label (3-10 words).\n"
-        "- description: short visual summary (8-24 words).\n"
+        "- name must be a setting phrase that starts with a location preposition: In/At/On/Near/Inside/Outside/By.\n"
+        "- Example names: In the classroom, In the hallway, At lunch, In speech room.\n"
+        "- description: short visual location summary (8-24 words).\n"
         "- characters: subset of known characters present in that scene.\n"
-        "- Preserve story wording when possible.\n\n"
+        "- Preserve story wording when possible.\n"
+        "- Do not output actions/events as scene names.\n\n"
         f"Story title: {story_title}\n"
         f"Known characters: {chars_blob}\n"
         f"Heuristic scene hints: {hints_blob}\n"

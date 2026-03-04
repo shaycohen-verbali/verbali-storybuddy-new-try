@@ -301,9 +301,11 @@ def build_scene_profiles(
 
 
 def build_fallback_scene_profiles(scenes: List[str], facts: List[str], characters: List[str]) -> List[Dict[str, object]]:
+    derived = extract_setting_phrases(" ".join(facts), max_count=16)
+    candidates = dedupe([*derived, *scenes])[:12]
     out: List[Dict[str, object]] = []
     seen = set()
-    for scene in scenes[:12]:
+    for scene in candidates:
         name = str(scene or "").strip()
         if not name:
             continue
@@ -320,7 +322,10 @@ def build_fallback_scene_profiles(scenes: List[str], facts: List[str], character
                 matching_facts.append(fact)
 
         description_fact = matching_facts[0] if matching_facts else ""
-        description = truncate(strip_page_markers(description_fact), 140) if description_fact else "Important story scene."
+        if description_fact:
+            description = truncate(strip_page_markers(description_fact), 140)
+        else:
+            description = f"Story setting: {name}."
 
         scene_characters: List[str] = []
         for fact in matching_facts[:5]:
@@ -981,10 +986,7 @@ def resolve_participants(package: StoryPackage, question: str, option_text: str,
     if not chars:
         chars = find_characters_from_related_facts(package, support_fact, alias_index)[:3]
     objects = [obj for obj in package.objects if obj.lower() in text_lower][:3]
-    scene = next(
-        (scene for scene in package.scenes if normalize(scene) in normalize(text)),
-        package.scenes[0] if package.scenes else "Main story setting",
-    )
+    scene = select_best_scene_setting(package.scenes, text=text, support_fact=support_fact)
 
     if not chars and package.characters:
         chars = package.characters[:1]
@@ -1079,6 +1081,40 @@ def find_characters_from_related_facts(package: StoryPackage, support_fact: str,
                 seen.add(key)
                 out.append(name)
     return out
+
+
+def select_best_scene_setting(scenes: List[str], *, text: str, support_fact: str) -> str:
+    if not scenes:
+        return "Main story setting"
+    source = normalize(text)
+    support = normalize(support_fact)
+    source_tokens = set(tokenize(text))
+    support_tokens = set(tokenize(support_fact))
+    best_scene = scenes[0]
+    best_score = -1
+    for scene in scenes:
+        normalized_scene = normalize_scene_setting(scene)
+        if not normalized_scene:
+            continue
+        score = 0
+        norm_scene = normalize(normalized_scene)
+        if norm_scene in source:
+            score += 8
+        if norm_scene in support:
+            score += 6
+        scene_tokens = [
+            tok
+            for tok in tokenize(normalized_scene)
+            if tok not in {"in", "at", "on", "near", "inside", "outside", "by", "the", "a", "an"}
+        ]
+        overlap_source = sum(1 for tok in scene_tokens if tok in source_tokens)
+        overlap_support = sum(1 for tok in scene_tokens if tok in support_tokens)
+        score += overlap_source * 2
+        score += overlap_support * 3
+        if score > best_score:
+            best_score = score
+            best_scene = normalized_scene
+    return best_scene
 
 
 def generate_special_answer_options(package: StoryPackage, question: str) -> List[AnswerOption] | None:
@@ -1288,13 +1324,70 @@ def extract_objects(text: str, characters: List[str]) -> List[str]:
     return [word for word, count in counts.most_common() if count > 1]
 
 
-def extract_scenes(sentences: List[str]) -> List[str]:
-    out = []
-    for sentence in sentences:
-        m = re.search(r"\b(in|at|on|near|inside|outside|by)\b([^.!?,;]+)", sentence, flags=re.I)
-        if m:
-            out.append(capitalize(f"{m.group(1)} {m.group(2).strip()}"))
+def normalize_scene_setting(value: str) -> str:
+    setting = strip_page_markers(str(value or ""))
+    setting = re.sub(r"\s+", " ", setting).strip(" .,:;")
+    if not setting:
+        return ""
+    if not re.match(r"^(in|at|on|near|inside|outside|by)\b", setting, flags=re.I):
+        setting = f"In {setting}"
+    setting = re.sub(r"\s+", " ", setting).strip(" .,:;")
+    if setting and setting[:1].islower():
+        setting = setting[:1].upper() + setting[1:]
+    words = setting.split()
+    if len(words) > 10:
+        setting = " ".join(words[:10])
+    return setting
 
+
+def is_valid_scene_setting(value: str) -> bool:
+    lowered = normalize_scene_setting(value).lower()
+    if not lowered:
+        return False
+    if len(lowered.split()) < 2:
+        return False
+    if len(lowered.split()) > 10:
+        return False
+    if not re.match(r"^(in|at|on|near|inside|outside|by)\b", lowered):
+        return False
+    if re.search(r"\b(he|she|they|his|her|their|i|we|you)\b", lowered):
+        return False
+    banned = [
+        "copyright",
+        "all rights reserved",
+        "learning together series",
+        "publisher",
+        "title page",
+        "table of contents",
+        "isbn",
+    ]
+    if any(term in lowered for term in banned):
+        return False
+    return True
+
+
+def extract_setting_phrases(text: str, *, max_count: int = 12) -> List[str]:
+    source = strip_page_markers(str(text or ""))
+    out: List[str] = []
+    seen = set()
+    for match in re.finditer(r"\b(in|at|on|near|inside|outside|by)\b\s+([^.!?,;\n]+)", source, flags=re.I):
+        phrase = f"{match.group(1)} {match.group(2).strip()}"
+        phrase = re.split(r"\b(and|but|because|which|that|who|while|then)\b", phrase, maxsplit=1, flags=re.I)[0]
+        normalized = normalize_scene_setting(phrase)
+        key = normalize(normalized)
+        if not normalized or key in seen:
+            continue
+        if not is_valid_scene_setting(normalized):
+            continue
+        seen.add(key)
+        out.append(normalized)
+        if len(out) >= max_count:
+            break
+    return out
+
+
+def extract_scenes(sentences: List[str]) -> List[str]:
+    out = extract_setting_phrases(" ".join(sentences), max_count=12)
     if not out:
         out = ["Main story setting"]
 
