@@ -141,7 +141,7 @@ function wireSetup() {
     }
   };
 
-  const buildSetupPayload = async () => {
+  const buildSetupPayload = async ({ includePdf = false } = {}) => {
     const storyTitle = el.storyTitle.value.trim();
     if (!storyTitle) {
       throw new Error("Please enter a story title.");
@@ -151,25 +151,50 @@ function wireSetup() {
     const isPdf = file && (/\.pdf$/i.test(file.name) || file.type === "application/pdf");
     const styleRefs = state.styleRefs.length ? state.styleRefs : (currentEditingPackage()?.style_refs || []);
     const bookText = el.bookText.value.trim() || null;
-    const pdfBase64 = isPdf ? await fileToDataUrl(file) : null;
+    const pdfBase64 = includePdf && isPdf ? await fileToDataUrl(file) : null;
+    const payloadStyleRefs = await Promise.all(
+      styleRefs.map(async (ref, idx) => {
+        const normalized = normalizeStyleRef(ref, `save-${idx}`);
+        return {
+          ...normalized,
+          dataUrl: await compressStyleRefForPayload(normalized.dataUrl),
+        };
+      })
+    );
 
     return {
       packageId: state.editingPackageId,
       storyTitle,
       bookText,
       pdfBase64,
-      styleRefs: styleRefs.map((ref, idx) => normalizeStyleRef(ref, `save-${idx}`)),
+      styleRefs: payloadStyleRefs,
       characterImageHints: buildCharacterImageHints(el.bookText.value, styleRefs),
     };
   };
 
   const runSetupPreview = async () => {
-    const payload = await buildSetupPayload();
-    const result = await apiRequest("/api/setup/preview", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    applySetupResult(result, { saved: false });
+    try {
+      const payload = await buildSetupPayload({ includePdf: true });
+      const result = await apiRequest("/api/setup/preview", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      applySetupResult(result, { saved: false });
+      return;
+    } catch (err) {
+      const message = readError(err);
+      if (!/\b413\b|payload too large|entity too large/i.test(message)) {
+        throw err;
+      }
+      // Retry without PDF body when serverless request size limits are hit.
+      const fallbackPayload = await buildSetupPayload({ includePdf: false });
+      const fallbackResult = await apiRequest("/api/setup/preview", {
+        method: "POST",
+        body: JSON.stringify(fallbackPayload),
+      });
+      applySetupResult(fallbackResult, { saved: false });
+      setSetupNote("AI preview completed without PDF attachment due to request size limits.");
+    }
   };
 
   el.bookFile.addEventListener("change", async () => {
@@ -317,7 +342,7 @@ function wireSetup() {
     el.savePackageBtn.textContent = "Saving...";
 
     try {
-      const payload = await buildSetupPayload();
+      const payload = await buildSetupPayload({ includePdf: false });
 
       const result = await apiRequest("/api/setup/ingest", {
         method: "POST",
@@ -1376,6 +1401,46 @@ function fileToDataUrl(file) {
     reader.onerror = () => reject(new Error("Failed to read file"));
     reader.readAsDataURL(file);
   });
+}
+
+function loadImageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to decode image"));
+    img.src = dataUrl;
+  });
+}
+
+async function compressStyleRefForPayload(dataUrl) {
+  const value = String(dataUrl || "");
+  if (!/^data:image\//i.test(value)) {
+    return value;
+  }
+
+  // Keep tiny refs as-is to avoid unnecessary quality loss.
+  if (value.length < 240_000) {
+    return value;
+  }
+
+  try {
+    const img = await loadImageFromDataUrl(value);
+    const maxWidth = 720;
+    const scale = Math.min(1, maxWidth / Math.max(1, img.width));
+    const targetWidth = Math.max(1, Math.round(img.width * scale));
+    const targetHeight = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return value;
+    }
+    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+    return canvas.toDataURL("image/jpeg", 0.76);
+  } catch {
+    return value;
+  }
 }
 
 async function extractPdfTextFromFile(file) {
