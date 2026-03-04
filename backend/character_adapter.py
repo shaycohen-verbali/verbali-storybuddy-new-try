@@ -11,7 +11,7 @@ import httpx
 def _normalize_model_name(model: str) -> str:
     cleaned = (model or "").strip()
     if not cleaned:
-        return "gemini-3.1"
+        return "gemini-3.1-flash-lite-preview"
     return cleaned[7:] if cleaned.startswith("models/") else cleaned
 
 
@@ -139,7 +139,7 @@ def extract_character_profiles_with_gemini(
     model = _normalize_model_name(
         os.getenv("STORYBUDDY_CHARACTER_MODEL", "").strip()
         or os.getenv("STORYBUDDY_ANSWER_MODEL", "").strip()
-        or "gemini-3.1"
+        or "gemini-3.1-flash-lite-preview"
     )
     base_url = os.getenv("STORYBUDDY_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
     endpoint = f"{base_url}/models/{model}:generateContent?key={api_key}"

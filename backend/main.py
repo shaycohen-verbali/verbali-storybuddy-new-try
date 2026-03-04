@@ -39,7 +39,7 @@ def config() -> dict:
     character_model = (
         os.getenv("STORYBUDDY_CHARACTER_MODEL", "").strip()
         or answer_model
-        or "gemini-3.1"
+        or "gemini-3.1-flash-lite-preview"
     )
     return {
         "hasReplicateToken": has_replicate_token,

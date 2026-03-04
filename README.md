@@ -27,7 +27,7 @@ Also accepted (fallback name):
 
 Optional:
 - `STORYBUDDY_ANSWER_MODEL` (default `gemini-2.5-flash`)
-- `STORYBUDDY_CHARACTER_MODEL` (default `gemini-3.1`; used for character identification/profile extraction in setup)
+- `STORYBUDDY_CHARACTER_MODEL` (default `gemini-3.1-flash-lite-preview`; used for character identification/profile extraction in setup)
 - `STORYBUDDY_GEMINI_BASE_URL` (default `https://generativelanguage.googleapis.com/v1beta`)
 - `STORYBUDDY_ALLOW_RULE_BASED_FALLBACK` (default `false`; when `true`, uses local heuristic fallback if Gemini fails)
 - `STORYBUDDY_ALLOW_CHARACTER_FALLBACK` (default `false`; when `true`, allows regex fallback for character extraction in setup)
