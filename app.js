@@ -382,7 +382,16 @@ function wireAsk() {
       await renderAskResult(result);
       stopAskTimer(performance.now() - askStartedAt);
     } catch (err) {
-      el.timingsView.textContent = `Ask failed: ${readError(err)}. Check GEMINI_API_KEY and REPLICATE_API_TOKEN in Vercel project settings.`;
+      const errorMessage = readError(err);
+      if (/supportFact|grounded|grounding|provided facts/i.test(errorMessage)) {
+        el.timingsView.textContent = `Ask failed: ${errorMessage}. The answer model returned an option that wasn't properly grounded in your story facts.`;
+      } else if (/replicate|prediction|timed out|image generation/i.test(errorMessage)) {
+        el.timingsView.textContent = `Ask failed: ${errorMessage}. Check REPLICATE_API_TOKEN and Replicate model access.`;
+      } else if (/gemini|api key|google/i.test(errorMessage)) {
+        el.timingsView.textContent = `Ask failed: ${errorMessage}. Check GEMINI_API_KEY in Vercel project settings.`;
+      } else {
+        el.timingsView.textContent = `Ask failed: ${errorMessage}`;
+      }
       stopAskTimer(performance.now() - askStartedAt);
     } finally {
       el.generateBtn.disabled = false;
