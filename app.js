@@ -3,6 +3,7 @@ const state = {
   editingPackageId: null,
   styleRefs: [],
   characterImageHints: {},
+  detectedCharacters: [],
   latestDebugBundle: null,
   runtimeConfig: null,
   askTimer: {
@@ -49,6 +50,7 @@ const el = {
   timingsView: document.getElementById("timingsView"),
   timelineView: document.getElementById("timelineView"),
   cards: document.getElementById("cards"),
+  askCharacterGallery: document.getElementById("askCharacterGallery"),
   debugView: document.getElementById("debugView"),
   copyDebugBtn: document.getElementById("copyDebugBtn"),
 
@@ -71,6 +73,7 @@ async function init() {
   wireLibrary();
   setupSpeech();
   await refreshPackages();
+  renderAskCharacterGallery();
   clearRun();
   if (state.runtimeConfig && !state.runtimeConfig.replicateConfigured) {
     const message = "Replicate is not configured. Set REPLICATE_API_TOKEN to generate images.";
@@ -124,6 +127,7 @@ function wireSetup() {
 
     if (isText) {
       el.bookText.value = await file.text();
+      state.detectedCharacters = extractCharacterHintsFromText(el.bookText.value || "");
       removeBookPageRefs();
       ensureCharacterMappingCoverage();
       renderStyleRefEditor();
@@ -146,6 +150,7 @@ function wireSetup() {
         renderCharacterMapEditor();
         if (extraction.text && extraction.text.length >= 40) {
           el.bookText.value = extraction.text;
+          state.detectedCharacters = extractCharacterHintsFromText(el.bookText.value || "");
           if (!el.storyTitle.value.trim()) {
             el.storyTitle.value = file.name.replace(/\.pdf$/i, "");
           }
@@ -205,6 +210,7 @@ function wireSetup() {
   });
 
   el.bookText.addEventListener("input", () => {
+    state.detectedCharacters = extractCharacterHintsFromText(el.bookText.value || "");
     ensureCharacterMappingCoverage();
     renderCharacterMapEditor();
   });
@@ -253,6 +259,7 @@ function wireSetup() {
 
       state.editingPackageId = result.package.id;
       state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
+      state.detectedCharacters = Array.isArray(result.package.characters) ? result.package.characters : [];
       loadCharacterHintsFromPackage(result.package);
       ensureCharacterMappingCoverage();
       renderStyleRefEditor();
@@ -282,6 +289,10 @@ function wireSetup() {
 }
 
 function wireAsk() {
+  el.packageSelect.addEventListener("change", () => {
+    renderAskCharacterGallery();
+  });
+
   el.generateBtn.addEventListener("click", async () => {
     const packageId = el.packageSelect.value;
     const question = el.questionInput.value.trim();
@@ -419,6 +430,7 @@ async function refreshPackages(preferredId = "") {
   saveCachedPackages(state.packages);
   renderPackageSelect(preferredId);
   renderLibrary();
+  renderAskCharacterGallery();
 }
 
 function renderPackageSelect(preferredId = "") {
@@ -440,6 +452,7 @@ function renderPackageSelect(preferredId = "") {
     }
     el.packageSelect.appendChild(option);
   });
+  renderAskCharacterGallery();
 }
 
 function renderLibrary() {
@@ -499,6 +512,7 @@ function loadPackageToSetup(packageId) {
 
   state.editingPackageId = pkg.id;
   state.styleRefs = (pkg.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `pkg-${idx}`));
+  state.detectedCharacters = Array.isArray(pkg.characters) ? pkg.characters : [];
   loadCharacterHintsFromPackage(pkg);
   ensureCharacterMappingCoverage();
   el.storyTitle.value = pkg.title || "";
@@ -593,6 +607,74 @@ async function renderAskResult(result) {
   el.debugView.textContent = JSON.stringify(result.debugBundle || {}, null, 2);
 }
 
+function selectedAskPackage() {
+  const packageId = el.packageSelect?.value || "";
+  if (!packageId) {
+    return null;
+  }
+  return state.packages.find((pkg) => pkg.id === packageId) || null;
+}
+
+function renderAskCharacterGallery() {
+  if (!el.askCharacterGallery) {
+    return;
+  }
+  el.askCharacterGallery.innerHTML = "";
+
+  const pkg = selectedAskPackage();
+  if (!pkg) {
+    const empty = document.createElement("p");
+    empty.className = "inline-note";
+    empty.textContent = "Select a package to view character-image mapping.";
+    el.askCharacterGallery.appendChild(empty);
+    return;
+  }
+
+  const characters = Array.isArray(pkg.characters) ? pkg.characters : [];
+  const refs = Array.isArray(pkg.style_refs) ? pkg.style_refs.map((ref, idx) => normalizeStyleRef(ref, `ask-ref-${idx}`)) : [];
+  const refLookup = new Map(refs.map((ref) => [ref.id, ref]));
+  const mapRows = Array.isArray(pkg.character_style_map) ? pkg.character_style_map : [];
+  const mapLookup = new Map(
+    mapRows.map((row) => [String(row.character || ""), toHintList(row.ref_ids || [])])
+  );
+
+  if (!characters.length) {
+    const empty = document.createElement("p");
+    empty.className = "inline-note";
+    empty.textContent = "No detected characters in this package yet. Open Setup and save the package again.";
+    el.askCharacterGallery.appendChild(empty);
+    return;
+  }
+
+  characters.forEach((character) => {
+    const refIds = mapLookup.get(character) || [];
+    const mappedRef = refLookup.get(refIds[0] || "") || null;
+
+    const card = document.createElement("article");
+    card.className = "characterGalleryItem";
+
+    const img = document.createElement("img");
+    img.className = "characterGalleryItem__image";
+    img.alt = mappedRef ? `${character} mapped image` : `${character} missing image`;
+    img.src =
+      mappedRef?.dataUrl ||
+      "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='130'%3E%3Crect width='100%25' height='100%25' fill='%23f3efe2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%237a7567' font-size='13' font-family='Arial'%3ENo mapped image%3C/text%3E%3C/svg%3E";
+
+    const name = document.createElement("p");
+    name.className = "characterGalleryItem__name";
+    name.textContent = character;
+
+    const meta = document.createElement("p");
+    meta.className = "characterGalleryItem__meta";
+    meta.textContent = mappedRef ? mappedRef.name : "No image mapped";
+
+    card.appendChild(img);
+    card.appendChild(name);
+    card.appendChild(meta);
+    el.askCharacterGallery.appendChild(card);
+  });
+}
+
 function currentEditingPackage() {
   return state.packages.find((pkg) => pkg.id === state.editingPackageId);
 }
@@ -601,6 +683,7 @@ function resetSetup() {
   state.editingPackageId = null;
   state.styleRefs = [];
   state.characterImageHints = {};
+  state.detectedCharacters = [];
   el.storyTitle.value = "";
   el.bookText.value = "";
   el.bookFile.value = "";
@@ -657,8 +740,12 @@ function buildCharacterImageHints(text, styleRefs) {
 function deriveCharacterList() {
   const pkg = currentEditingPackage();
   const packageCharacters = Array.isArray(pkg?.characters) ? pkg.characters : [];
+  const explicitDetected = Array.isArray(state.detectedCharacters) ? state.detectedCharacters : [];
+  const hintKeys = Object.keys(state.characterImageHints || {});
   const textCharacters = extractCharacterHintsFromText(el.bookText.value || "");
-  return dedupeStrings([...packageCharacters, ...textCharacters].map((name) => String(name || "").trim()).filter(Boolean));
+  const preferred = explicitDetected.length ? explicitDetected : packageCharacters;
+  const merged = preferred.length ? [...preferred, ...hintKeys] : [...hintKeys, ...textCharacters];
+  return dedupeStrings(merged.map((name) => String(name || "").trim()).filter(Boolean)).slice(0, 30);
 }
 
 function buildAutoCharacterImageHints(text, styleRefs, characters) {
@@ -969,7 +1056,22 @@ function wrapRefField(label, inputEl) {
 
 function extractCharacterHintsFromText(text) {
   const matches = (text || "").match(/\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b/g) || [];
-  return dedupeStrings(matches.map((name) => name.trim())).filter((name) => !/^(The|A|An|And|But|When|Then)$/.test(name));
+  const banned = new Set([
+    "The", "A", "An", "And", "But", "When", "Then", "After", "Before", "In", "On", "At", "Inside", "Outside",
+    "Page", "Back", "Every", "Tuesday", "Thursday", "By", "With", "Copyright", "Inc", "Story", "Book",
+  ]);
+  return dedupeStrings(matches.map((name) => name.trim())).filter((name) => {
+    if (!name || name.length < 3) {
+      return false;
+    }
+    if (banned.has(name)) {
+      return false;
+    }
+    if (/^[A-Z]{2,}$/.test(name)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function extractSceneHintsFromText(text) {

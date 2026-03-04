@@ -399,6 +399,41 @@ textarea {
   font-weight: 600;
 }
 
+.characterGallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.7rem;
+  margin: 0.45rem 0 1rem;
+}
+
+.characterGalleryItem {
+  background: #fffcf0;
+  border: 1px solid #dccca3;
+  border-radius: 12px;
+  padding: 0.55rem;
+}
+
+.characterGalleryItem__image {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  display: block;
+  border-radius: 8px;
+  border: 1px solid #cbbfa8;
+  background: #f3efe2;
+}
+
+.characterGalleryItem__name {
+  margin: 0.45rem 0 0.12rem;
+  font-weight: 700;
+}
+
+.characterGalleryItem__meta {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
 @media (max-width: 860px) {
   .grid--2,
   .runtime,
