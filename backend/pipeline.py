@@ -47,6 +47,27 @@ STOP_WORDS = {
 
 logger = logging.getLogger("storybuddy.pipeline")
 
+FEELING_KEYWORDS = {
+    "happy",
+    "sad",
+    "scared",
+    "afraid",
+    "brave",
+    "nervous",
+    "angry",
+    "excited",
+    "calm",
+    "embarrassed",
+    "proud",
+    "frustrated",
+    "worried",
+    "confident",
+    "shy",
+    "lonely",
+    "tired",
+    "upset",
+}
+
 
 class CardImageGenerationError(RuntimeError):
     def __init__(self, *, card_id: str, model: str, detail: str):
@@ -526,6 +547,12 @@ def summarize_step_timings(timeline: List[Dict[str, object]]) -> Dict[str, int]:
 
 
 def generate_answer_options(package: StoryPackage, question: str) -> List[AnswerOption]:
+    feeling = generate_feeling_answer_options(package, question)
+    if feeling:
+        rnd = Random(hash(question) & 0xFFFFFFFF)
+        rnd.shuffle(feeling)
+        return feeling
+
     special = generate_special_answer_options(package, question)
     if special:
         rnd = Random(hash(question) & 0xFFFFFFFF)
@@ -623,6 +650,51 @@ def generate_special_answer_options(package: StoryPackage, question: str) -> Lis
         AnswerOption(text=correct_text, isCorrect=True, supportFact=support_fact),
         AnswerOption(text=wrong1, isCorrect=False, supportFact="Distractor option"),
         AnswerOption(text=wrong2, isCorrect=False, supportFact="Distractor option"),
+    ]
+
+
+def generate_feeling_answer_options(package: StoryPackage, question: str) -> List[AnswerOption] | None:
+    q = question.lower()
+    asks_feeling = ("feel" in q or "feeling" in q or "emotion" in q) and ("how" in q or "what" in q)
+    if not asks_feeling:
+        return None
+
+    candidates: List[tuple[str, str, int]] = []
+    for fact in package.facts:
+        for feeling in extract_feelings_from_fact(fact):
+            score = score_fact_against_question(fact, question)
+            if "not " in feeling:
+                score += 1
+            if any(name.lower() in fact.lower() for name in package.characters[:3]):
+                score += 1
+            candidates.append((feeling, strip_page_markers(fact), score))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda row: row[2], reverse=True)
+    correct_feeling, support_fact, _ = candidates[0]
+
+    distractor_pool = dedupe([row[0] for row in candidates[1:]] + [name for name in FEELING_KEYWORDS if name != correct_feeling])
+    distractors: List[str] = []
+    for candidate in distractor_pool:
+        if normalize(candidate) == normalize(correct_feeling):
+            continue
+        if normalize(candidate) in {normalize(d) for d in distractors}:
+            continue
+        distractors.append(candidate)
+        if len(distractors) == 2:
+            break
+
+    while len(distractors) < 2:
+        fallback = ["happy", "nervous", "sad", "calm"][len(distractors) % 4]
+        if normalize(fallback) != normalize(correct_feeling):
+            distractors.append(fallback)
+
+    return [
+        AnswerOption(text=capitalize(correct_feeling), isCorrect=True, supportFact=support_fact),
+        AnswerOption(text=capitalize(distractors[0]), isCorrect=False, supportFact="Distractor option"),
+        AnswerOption(text=capitalize(distractors[1]), isCorrect=False, supportFact="Distractor option"),
     ]
 
 
@@ -760,6 +832,11 @@ def answer_from_fact(question: str, fact: str, package: StoryPackage) -> str:
     q = question.lower()
     fact_clean = strip_page_markers(fact)
 
+    if "feel" in q or "feeling" in q or "emotion" in q:
+        feelings = extract_feelings_from_fact(fact_clean)
+        if feelings:
+            return capitalize(feelings[0])
+
     if "who" in q:
         for name in package.characters:
             if name.lower() in fact_clean.lower():
@@ -808,6 +885,41 @@ def normalize(text: str) -> str:
 
 def strip_page_markers(text: str) -> str:
     return re.sub(r"\[Page\s+\d+\]", " ", text, flags=re.I)
+
+
+def extract_feelings_from_fact(fact: str) -> List[str]:
+    lowered = strip_page_markers(fact).lower()
+    out: List[str] = []
+
+    for keyword in FEELING_KEYWORDS:
+        if re.search(rf"\b{re.escape(keyword)}\b", lowered):
+            out.append(keyword)
+
+    for match in re.finditer(r"\b(?:did not|didn't)\s+feel\s+([a-z][a-z\- ]{2,30})", lowered):
+        token = match.group(1).strip().split(" and ")[0].split(",")[0].strip()
+        if token:
+            out.append(f"not {token}")
+
+    for match in re.finditer(r"\b(?:felt|feel|feels|feeling)\s+([a-z][a-z\- ]{2,30})", lowered):
+        token = match.group(1).strip().split(" and ")[0].split(",")[0].strip()
+        token = re.sub(r"[^a-z\- ]", "", token).strip()
+        if token and len(token) <= 20:
+            out.append(token)
+
+    for match in re.finditer(r"\b(?:was|were|is|are)\s+([a-z][a-z\- ]{2,20})", lowered):
+        token = match.group(1).strip().split(" and ")[0].split(",")[0].strip()
+        if token in FEELING_KEYWORDS:
+            out.append(token)
+
+    cleaned: List[str] = []
+    for entry in out:
+        entry = re.sub(r"\s+", " ", entry).strip()
+        if not entry:
+            continue
+        if entry in {"the", "very", "really"}:
+            continue
+        cleaned.append(entry)
+    return dedupe(cleaned)[:4]
 
 
 def format_name_list(values: List[str]) -> str:

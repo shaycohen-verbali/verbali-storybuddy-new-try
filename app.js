@@ -50,6 +50,7 @@ const el = {
   copyDebugBtn: document.getElementById("copyDebugBtn"),
 
   refreshLibraryBtn: document.getElementById("refreshLibraryBtn"),
+  newBookBtn: document.getElementById("newBookBtn"),
   libraryList: document.getElementById("libraryList"),
   libraryItemTemplate: document.getElementById("libraryItemTemplate"),
   cardTemplate: document.getElementById("cardTemplate"),
@@ -308,6 +309,11 @@ function wireAsk() {
 
 function wireLibrary() {
   el.refreshLibraryBtn.addEventListener("click", () => refreshPackages());
+  el.newBookBtn.addEventListener("click", () => {
+    resetSetup();
+    activateTab("setup");
+    setSetupNote("Ready for a new book. Upload a PDF or paste text, then save as a new package.");
+  });
 }
 
 function setupSpeech() {
