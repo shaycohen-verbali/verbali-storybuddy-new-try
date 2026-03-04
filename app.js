@@ -150,7 +150,7 @@ function wireSetup() {
     const isPdf = file && (/\.pdf$/i.test(file.name) || file.type === "application/pdf");
     const styleRefs = state.styleRefs.length ? state.styleRefs : (currentEditingPackage()?.style_refs || []);
     const bookText = el.bookText.value.trim() || null;
-    const pdfBase64 = isPdf && !bookText ? await fileToDataUrl(file) : null;
+    const pdfBase64 = isPdf ? await fileToDataUrl(file) : null;
 
     return {
       packageId: state.editingPackageId,

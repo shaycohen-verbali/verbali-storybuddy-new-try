@@ -111,6 +111,15 @@ def _clean_appearance_traits(value: object) -> List[str]:
     return out
 
 
+def _normalize_pdf_base64(pdf_base64: str) -> str:
+    value = str(pdf_base64 or "").strip()
+    if not value:
+        return ""
+    if "," in value and value.lower().startswith("data:"):
+        value = value.split(",", 1)[1].strip()
+    return re.sub(r"\s+", "", value)
+
+
 def _is_bad_character_name(name: str) -> bool:
     if len(name) < 2:
         return True
@@ -131,6 +140,7 @@ def extract_character_profiles_with_gemini(
     raw_text: str,
     facts: List[str],
     heuristic_characters: List[str],
+    pdf_base64: str = "",
 ) -> List[Dict[str, object]]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
     if not api_key:
@@ -166,8 +176,20 @@ def extract_character_profiles_with_gemini(
         f"{raw_text[:28000]}"
     )
 
+    parts: List[Dict[str, object]] = [{"text": prompt}]
+    normalized_pdf = _normalize_pdf_base64(pdf_base64)
+    if normalized_pdf:
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": "application/pdf",
+                    "data": normalized_pdf,
+                }
+            }
+        )
+
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
+        "contents": [{"parts": parts}],
         "generationConfig": {
             "temperature": 0.1,
             "responseMimeType": "application/json",

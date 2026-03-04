@@ -104,6 +104,7 @@ def ingest_setup(req: SetupIngestRequest, existing: StoryPackage | None = None) 
         raw_text=text,
         facts=learned["facts"],
         heuristic_characters=learned["characters"],
+        pdf_base64=req.pdf_base64 or "",
     )
     if character_profiles:
         learned["characters"] = [str(row.get("name", "")) for row in character_profiles if str(row.get("name", "")).strip()]
@@ -174,6 +175,7 @@ def build_character_profiles(
     raw_text: str,
     facts: List[str],
     heuristic_characters: List[str],
+    pdf_base64: str = "",
 ) -> List[Dict[str, object]]:
     try:
         rows = extract_character_profiles_with_gemini(
@@ -181,6 +183,7 @@ def build_character_profiles(
             raw_text=raw_text,
             facts=facts,
             heuristic_characters=heuristic_characters,
+            pdf_base64=pdf_base64,
         )
         logger.info("character extraction provider=gemini count=%s", len(rows))
         return rows
