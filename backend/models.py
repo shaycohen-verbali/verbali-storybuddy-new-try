@@ -22,6 +22,7 @@ class StyleRef(BaseModel):
 
 class CharacterStyleMap(BaseModel):
     character: str
+    description: str = ""
     ref_ids: List[str] = Field(default_factory=list)
     confidence: float = 0.0
 
@@ -38,6 +39,11 @@ class StyleProfile(BaseModel):
     texture_keywords: List[str] = Field(default_factory=list)
 
 
+class CharacterProfile(BaseModel):
+    name: str
+    description: str = ""
+
+
 class StoryPackage(BaseModel):
     id: str
     title: str
@@ -45,6 +51,7 @@ class StoryPackage(BaseModel):
     facts: List[str] = Field(default_factory=list)
     scenes: List[str] = Field(default_factory=list)
     characters: List[str] = Field(default_factory=list)
+    character_profiles: List[CharacterProfile] = Field(default_factory=list)
     objects: List[str] = Field(default_factory=list)
     style_refs: List[StyleRef] = Field(default_factory=list)
     style_profile: StyleProfile = Field(default_factory=StyleProfile)

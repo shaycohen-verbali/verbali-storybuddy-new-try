@@ -14,12 +14,14 @@ from random import Random
 from typing import Dict, List, Tuple
 
 from .answer_adapter import generate_answer_options_with_gemini
+from .character_adapter import extract_character_profiles_with_gemini
 from .image_adapter import canonicalize_model, generate_image
 from .models import (
     AnswerCard,
     AnswerOption,
     AskResponse,
     CardDebug,
+    CharacterProfile,
     CharacterStyleMap,
     SceneStyleMap,
     SetupIngestRequest,
@@ -97,12 +99,21 @@ def ingest_setup(req: SetupIngestRequest, existing: StoryPackage | None = None) 
         raise ValueError("book text is required (bookText or pdfBase64)")
 
     learned = analyze_book_text(text)
+    character_profiles = build_character_profiles(
+        story_title=req.story_title.strip(),
+        raw_text=text,
+        facts=learned["facts"],
+        heuristic_characters=learned["characters"],
+    )
+    if character_profiles:
+        learned["characters"] = [row["name"] for row in character_profiles]
     style_refs = normalize_style_refs(req.style_refs or (existing.style_refs if existing else []))
     style_profile = build_style_profile(style_refs, text)
     character_map = build_character_style_map(
         characters=learned["characters"],
         style_refs=style_refs,
         explicit_hints=req.character_image_hints,
+        descriptions={row["name"]: row["description"] for row in character_profiles},
     )
     scene_map = build_scene_style_map(
         scenes=learned["scenes"],
@@ -118,6 +129,7 @@ def ingest_setup(req: SetupIngestRequest, existing: StoryPackage | None = None) 
         facts=learned["facts"],
         scenes=learned["scenes"],
         characters=learned["characters"],
+        character_profiles=[CharacterProfile(name=row["name"], description=row["description"]) for row in character_profiles],
         objects=learned["objects"],
         style_refs=style_refs,
         style_profile=style_profile,
@@ -138,6 +150,55 @@ def ingest_setup(req: SetupIngestRequest, existing: StoryPackage | None = None) 
     }
 
     return SetupIngestResponse(package=package, learnedSummary=summary)
+
+
+def build_character_profiles(
+    *,
+    story_title: str,
+    raw_text: str,
+    facts: List[str],
+    heuristic_characters: List[str],
+) -> List[Dict[str, str]]:
+    try:
+        rows = extract_character_profiles_with_gemini(
+            story_title=story_title,
+            raw_text=raw_text,
+            facts=facts,
+            heuristic_characters=heuristic_characters,
+        )
+        logger.info("character extraction provider=gemini count=%s", len(rows))
+        return rows
+    except Exception as exc:
+        allow_fallback = os.getenv("STORYBUDDY_ALLOW_CHARACTER_FALLBACK", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if allow_fallback:
+            logger.warning("character extraction with gemini failed, using fallback: %s", exc)
+            return build_fallback_character_profiles(heuristic_characters, facts)
+        raise ValueError(f"AI character extraction failed: {exc}") from exc
+
+
+def build_fallback_character_profiles(characters: List[str], facts: List[str]) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for character in characters[:12]:
+        name = character.strip()
+        if not name:
+            continue
+        key = normalize(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        fact = next((f for f in facts if re.search(rf"\b{re.escape(name)}\b", f, flags=re.I)), "")
+        description = "Character mentioned in the story."
+        if fact:
+            snippet = strip_page_markers(fact)
+            description = truncate(snippet, 120)
+        out.append({"name": name, "description": description})
+    return out
 
 
 def extract_text_from_pdf_base64(pdf_b64: str) -> str:
@@ -267,7 +328,9 @@ def build_character_style_map(
     characters: List[str],
     style_refs: List[StyleRef],
     explicit_hints: Dict[str, List[str]],
+    descriptions: Dict[str, str] | None = None,
 ) -> List[CharacterStyleMap]:
+    descriptions = descriptions or {}
     ref_lookup = {r.id: r for r in style_refs}
     rows: List[CharacterStyleMap] = []
 
@@ -279,7 +342,14 @@ def build_character_style_map(
                 if ref_id in ref_lookup and ref_id not in matched_ids:
                     matched_ids.append(ref_id)
             if matched_ids:
-                rows.append(CharacterStyleMap(character=character, ref_ids=matched_ids[:2], confidence=0.95))
+                rows.append(
+                    CharacterStyleMap(
+                        character=character,
+                        description=descriptions.get(character, ""),
+                        ref_ids=matched_ids[:2],
+                        confidence=0.95,
+                    )
+                )
                 continue
 
         scored = sorted(
@@ -303,7 +373,14 @@ def build_character_style_map(
             if top_score >= 8:
                 confidence = 0.9
 
-        rows.append(CharacterStyleMap(character=character, ref_ids=matched_ids[:2], confidence=confidence))
+        rows.append(
+            CharacterStyleMap(
+                character=character,
+                description=descriptions.get(character, ""),
+                ref_ids=matched_ids[:2],
+                confidence=confidence,
+            )
+        )
 
     return rows
 

@@ -259,7 +259,7 @@ function wireSetup() {
 
       state.editingPackageId = result.package.id;
       state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
-      state.detectedCharacters = Array.isArray(result.package.characters) ? result.package.characters : [];
+      state.detectedCharacters = getPackageCharacterProfiles(result.package).map((row) => row.name);
       loadCharacterHintsFromPackage(result.package);
       ensureCharacterMappingCoverage();
       renderStyleRefEditor();
@@ -512,7 +512,7 @@ function loadPackageToSetup(packageId) {
 
   state.editingPackageId = pkg.id;
   state.styleRefs = (pkg.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `pkg-${idx}`));
-  state.detectedCharacters = Array.isArray(pkg.characters) ? pkg.characters : [];
+  state.detectedCharacters = getPackageCharacterProfiles(pkg).map((row) => row.name);
   loadCharacterHintsFromPackage(pkg);
   ensureCharacterMappingCoverage();
   el.storyTitle.value = pkg.title || "";
@@ -607,6 +607,37 @@ async function renderAskResult(result) {
   el.debugView.textContent = JSON.stringify(result.debugBundle || {}, null, 2);
 }
 
+function getPackageCharacterProfiles(pkg) {
+  if (!pkg) {
+    return [];
+  }
+  const rawProfiles = Array.isArray(pkg.character_profiles)
+    ? pkg.character_profiles
+    : Array.isArray(pkg.characterProfiles)
+    ? pkg.characterProfiles
+    : [];
+  const profiles = rawProfiles
+    .map((row) => ({
+      name: String(row?.name || "").trim(),
+      description: String(row?.description || "").trim(),
+    }))
+    .filter((row) => row.name);
+  if (profiles.length) {
+    return profiles;
+  }
+  const names = Array.isArray(pkg.characters) ? pkg.characters : [];
+  return names.map((name) => ({ name: String(name || "").trim(), description: "" })).filter((row) => row.name);
+}
+
+function findCharacterDescription(pkg, name) {
+  const target = String(name || "").trim().toLowerCase();
+  if (!target) {
+    return "";
+  }
+  const match = getPackageCharacterProfiles(pkg).find((row) => row.name.toLowerCase() === target);
+  return match?.description || "";
+}
+
 function selectedAskPackage() {
   const packageId = el.packageSelect?.value || "";
   if (!packageId) {
@@ -630,15 +661,13 @@ function renderAskCharacterGallery() {
     return;
   }
 
-  const characters = Array.isArray(pkg.characters) ? pkg.characters : [];
+  const characterProfiles = getPackageCharacterProfiles(pkg);
   const refs = Array.isArray(pkg.style_refs) ? pkg.style_refs.map((ref, idx) => normalizeStyleRef(ref, `ask-ref-${idx}`)) : [];
   const refLookup = new Map(refs.map((ref) => [ref.id, ref]));
   const mapRows = Array.isArray(pkg.character_style_map) ? pkg.character_style_map : [];
-  const mapLookup = new Map(
-    mapRows.map((row) => [String(row.character || ""), toHintList(row.ref_ids || [])])
-  );
+  const mapLookup = new Map(mapRows.map((row) => [String(row.character || ""), row]));
 
-  if (!characters.length) {
+  if (!characterProfiles.length) {
     const empty = document.createElement("p");
     empty.className = "inline-note";
     empty.textContent = "No detected characters in this package yet. Open Setup and save the package again.";
@@ -646,9 +675,12 @@ function renderAskCharacterGallery() {
     return;
   }
 
-  characters.forEach((character) => {
-    const refIds = mapLookup.get(character) || [];
+  characterProfiles.forEach((characterProfile) => {
+    const character = characterProfile.name;
+    const mapRow = mapLookup.get(character) || null;
+    const refIds = toHintList(mapRow?.ref_ids || []);
     const mappedRef = refLookup.get(refIds[0] || "") || null;
+    const description = mapRow?.description || characterProfile.description || "";
 
     const card = document.createElement("article");
     card.className = "characterGalleryItem";
@@ -666,11 +698,16 @@ function renderAskCharacterGallery() {
 
     const meta = document.createElement("p");
     meta.className = "characterGalleryItem__meta";
-    meta.textContent = mappedRef ? mappedRef.name : "No image mapped";
+    meta.textContent = description || "No description yet";
+
+    const mapping = document.createElement("p");
+    mapping.className = "characterGalleryItem__meta";
+    mapping.textContent = mappedRef ? `Image: ${mappedRef.name}` : "Image: no mapping";
 
     card.appendChild(img);
     card.appendChild(name);
     card.appendChild(meta);
+    card.appendChild(mapping);
     el.askCharacterGallery.appendChild(card);
   });
 }
@@ -739,7 +776,7 @@ function buildCharacterImageHints(text, styleRefs) {
 
 function deriveCharacterList() {
   const pkg = currentEditingPackage();
-  const packageCharacters = Array.isArray(pkg?.characters) ? pkg.characters : [];
+  const packageCharacters = getPackageCharacterProfiles(pkg).map((row) => row.name);
   const explicitDetected = Array.isArray(state.detectedCharacters) ? state.detectedCharacters : [];
   const hintKeys = Object.keys(state.characterImageHints || {});
   const textCharacters = extractCharacterHintsFromText(el.bookText.value || "");
@@ -979,10 +1016,12 @@ function renderCharacterMapEditor() {
 
   ensureCharacterMappingCoverage();
 
+  const pkg = currentEditingPackage();
   characters.forEach((character) => {
     const mappedIds = toHintList(state.characterImageHints[character] || []);
     const selectedRefId = mappedIds[0] || "";
     const selectedRef = state.styleRefs.find((ref) => ref.id === selectedRefId) || null;
+    const description = findCharacterDescription(pkg, character);
 
     const card = document.createElement("article");
     card.className = "characterMapItem";
@@ -1004,6 +1043,11 @@ function renderCharacterMapEditor() {
     title.className = "characterMapItem__title";
     title.textContent = character;
     fields.appendChild(title);
+
+    const desc = document.createElement("p");
+    desc.className = "characterMapItem__meta";
+    desc.textContent = description || "No character description yet. Save setup to generate AI descriptions.";
+    fields.appendChild(desc);
 
     const status = document.createElement("p");
     status.className = "characterMapItem__meta";
