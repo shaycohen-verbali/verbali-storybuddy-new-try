@@ -81,17 +81,21 @@ async function init() {
   await refreshPackages();
   renderAskCharacterGallery();
   clearRun();
-  if (state.runtimeConfig && !state.runtimeConfig.replicateConfigured) {
-    const message = "Replicate is not configured. Set REPLICATE_API_TOKEN to generate images.";
+  if (state.runtimeConfig && !state.runtimeConfig.answerConfigured) {
+    const message = "Gemini is not configured. Set GEMINI_API_KEY to generate answer options and Google API image models.";
     setSetupNote(message);
     el.timingsView.textContent = message;
     return;
   }
-  if (state.runtimeConfig && !state.runtimeConfig.answerConfigured) {
-    const message = "Gemini is not configured. Set GEMINI_API_KEY to generate answer options.";
+  if (state.runtimeConfig && !state.runtimeConfig.replicateConfigured) {
+    const message = "Replicate is not configured. Replicate model options are unavailable until REPLICATE_API_TOKEN is set.";
     setSetupNote(message);
     el.timingsView.textContent = message;
   }
+}
+
+function isGoogleApiImageModel(model) {
+  return String(model || "").toLowerCase().startsWith("google-");
 }
 
 async function loadRuntimeConfig() {
@@ -409,6 +413,7 @@ function wireAsk() {
     const packageId = el.packageSelect.value;
     const question = el.questionInput.value.trim();
     const model = el.modelSelect.value;
+    const usingGoogleImage = isGoogleApiImageModel(model);
     const selectedPackage = state.packages.find((pkg) => pkg.id === packageId) || null;
 
     if (!packageId) {
@@ -419,12 +424,12 @@ function wireAsk() {
       el.timingsView.textContent = "Enter or dictate a question first.";
       return;
     }
-    if (state.runtimeConfig && !state.runtimeConfig.replicateConfigured) {
-      el.timingsView.textContent = "Replicate is not configured. Add REPLICATE_API_TOKEN and redeploy.";
-      return;
-    }
     if (state.runtimeConfig && !state.runtimeConfig.answerConfigured) {
       el.timingsView.textContent = "Gemini is not configured. Add GEMINI_API_KEY and redeploy.";
+      return;
+    }
+    if (state.runtimeConfig && !usingGoogleImage && !state.runtimeConfig.replicateConfigured) {
+      el.timingsView.textContent = "Replicate is not configured. Add REPLICATE_API_TOKEN and redeploy.";
       return;
     }
 
@@ -445,8 +450,10 @@ function wireAsk() {
       const errorMessage = readError(err);
       if (/supportFact|grounded|grounding|provided facts/i.test(errorMessage)) {
         el.timingsView.textContent = `Ask failed: ${errorMessage}. The answer model returned an option that wasn't properly grounded in your story facts.`;
-      } else if (/replicate|prediction|timed out|image generation/i.test(errorMessage)) {
-        el.timingsView.textContent = `Ask failed: ${errorMessage}. Check REPLICATE_API_TOKEN and Replicate model access.`;
+      } else if (/prediction|timed out|image generation/i.test(errorMessage) || /replicate|google api/i.test(errorMessage)) {
+        el.timingsView.textContent = usingGoogleImage
+          ? `Ask failed: ${errorMessage}. Check GEMINI_API_KEY/GOOGLE_API_KEY and Google model access.`
+          : `Ask failed: ${errorMessage}. Check REPLICATE_API_TOKEN and Replicate model access.`;
       } else if (/gemini|api key|google/i.test(errorMessage)) {
         el.timingsView.textContent = `Ask failed: ${errorMessage}. Check GEMINI_API_KEY in Vercel project settings.`;
       } else {

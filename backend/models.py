@@ -101,7 +101,14 @@ class AskRequest(BaseModel):
     package_id: Optional[str] = Field(default=None, alias="packageId")
     package: Optional[StoryPackage] = None
     question: str
-    model: Literal["nano-banana-2", "nano-banana", "nano-banana-pro"] = "nano-banana-2"
+    model: Literal[
+        "nano-banana-2",
+        "nano-banana",
+        "nano-banana-pro",
+        "google-nano-banana-2",
+        "google-nano-banana",
+        "google-nano-banana-pro",
+    ] = "nano-banana-2"
 
     @field_validator("model", mode="before")
     @classmethod
@@ -113,6 +120,12 @@ class AskRequest(BaseModel):
             return "nano-banana-pro"
         if normalized == "standard":
             return "nano-banana"
+        if normalized in {"nano-banana-2-google", "nano-banana-2-google-api"}:
+            return "google-nano-banana-2"
+        if normalized in {"nano-banana-google", "nano-banana-google-api"}:
+            return "google-nano-banana"
+        if normalized in {"nano-banana-pro-google", "nano-banana-pro-google-api"}:
+            return "google-nano-banana-pro"
         return normalized
 
     class Config:

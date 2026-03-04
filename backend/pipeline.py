@@ -15,7 +15,7 @@ from typing import Dict, List, Tuple
 
 from .answer_adapter import generate_answer_options_with_gemini
 from .character_adapter import extract_character_profiles_with_gemini
-from .image_adapter import canonicalize_model, generate_image
+from .image_adapter import canonicalize_model, generate_image, image_provider_for_model
 from .scene_adapter import extract_scene_profiles_with_gemini
 from .models import (
     AnswerCard,
@@ -865,7 +865,7 @@ async def _generate_card(
             selectedParticipants=participants,
             styleRefsUsed=style_refs_used,
             modelUsed=model,
-            imageProvider="replicate",
+            imageProvider=image_provider_for_model(model),
             generationError=None,
             supportFact=option.support_fact,
         ),

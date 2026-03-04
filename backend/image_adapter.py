@@ -5,6 +5,7 @@ import base64
 import io
 import logging
 import os
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -17,15 +18,30 @@ except Exception:  # pragma: no cover - optional dependency in runtime
 logger = logging.getLogger("storybuddy.image")
 
 
-MODEL_SLUGS: Dict[str, str] = {
+REPLICATE_MODEL_SLUGS: Dict[str, str] = {
     "nano-banana-2": "google/nano-banana-2",
     "nano-banana": "google/nano-banana",
     "nano-banana-pro": "google/nano-banana-pro",
 }
 
+GOOGLE_MODEL_KEYS = {
+    "google-nano-banana-2",
+    "google-nano-banana",
+    "google-nano-banana-pro",
+}
+
+GOOGLE_MODEL_ENV_DEFAULTS: Dict[str, str] = {
+    "google-nano-banana-2": "nano-banana-2",
+    "google-nano-banana": "nano-banana",
+    "google-nano-banana-pro": "nano-banana-pro",
+}
+
 MODEL_ALIASES: Dict[str, str] = {
     "standard": "nano-banana",
     "pro": "nano-banana-pro",
+    "nano-banana-2-google": "google-nano-banana-2",
+    "nano-banana-google": "google-nano-banana",
+    "nano-banana-pro-google": "google-nano-banana-pro",
 }
 
 ALLOWED_ASPECT_RATIOS = {"1:1", "4:3"}
@@ -34,10 +50,17 @@ ALLOWED_ASPECT_RATIOS = {"1:1", "4:3"}
 def canonicalize_model(model: str) -> str:
     normalized = (model or "").strip().lower()
     canonical = MODEL_ALIASES.get(normalized, normalized)
-    if canonical not in MODEL_SLUGS:
-        supported = ", ".join(sorted(MODEL_SLUGS.keys()))
+    if canonical not in REPLICATE_MODEL_SLUGS and canonical not in GOOGLE_MODEL_KEYS:
+        supported = ", ".join(sorted([*REPLICATE_MODEL_SLUGS.keys(), *GOOGLE_MODEL_KEYS]))
         raise RuntimeError(f"unsupported model '{model}'. Supported models: {supported}")
     return canonical
+
+
+def image_provider_for_model(model: str) -> str:
+    canonical_model = canonicalize_model(model)
+    if canonical_model in GOOGLE_MODEL_KEYS:
+        return "google_api"
+    return "replicate"
 
 
 def _first_image_url(output: object) -> str:
@@ -109,6 +132,40 @@ def _prepare_style_ref_images(style_ref_images: List[str]) -> List[str]:
     return out
 
 
+def _data_url_to_inline_data(data_url: str) -> Optional[Dict[str, str]]:
+    value = str(data_url or "").strip()
+    if not value.startswith("data:") or "," not in value:
+        return None
+    header, payload = value.split(",", 1)
+    match = re.match(r"^data:([^;]+);base64$", header, flags=re.I)
+    if not match:
+        return None
+    mime_type = match.group(1).strip()
+    if not mime_type.startswith("image/"):
+        return None
+    if not payload.strip():
+        return None
+    return {"mime_type": mime_type, "data": payload}
+
+
+def _normalize_google_model_name(model: str) -> str:
+    cleaned = str(model or "").strip()
+    if not cleaned:
+        return "nano-banana-2"
+    return cleaned[7:] if cleaned.startswith("models/") else cleaned
+
+
+def _google_model_name(canonical_model: str) -> str:
+    env_name = {
+        "google-nano-banana-2": "STORYBUDDY_GOOGLE_IMAGE_MODEL_NANO_BANANA_2",
+        "google-nano-banana": "STORYBUDDY_GOOGLE_IMAGE_MODEL_NANO_BANANA",
+        "google-nano-banana-pro": "STORYBUDDY_GOOGLE_IMAGE_MODEL_NANO_BANANA_PRO",
+    }[canonical_model]
+    configured = os.getenv(env_name, "").strip()
+    fallback = GOOGLE_MODEL_ENV_DEFAULTS[canonical_model]
+    return _normalize_google_model_name(configured or fallback)
+
+
 async def _poll_replicate_prediction(
     *,
     client: httpx.AsyncClient,
@@ -147,21 +204,109 @@ async def _poll_replicate_prediction(
     )
 
 
-async def generate_image(
+def _extract_google_image_data_url(payload: Dict[str, object]) -> str:
+    candidates = payload.get("candidates") or []
+    if not isinstance(candidates, list):
+        return ""
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content") or {}
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts") or []
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            inline = part.get("inlineData") or part.get("inline_data")
+            if isinstance(inline, dict):
+                image_b64 = str(inline.get("data") or "").strip()
+                mime = str(inline.get("mimeType") or inline.get("mime_type") or "image/png").strip()
+                if image_b64:
+                    return f"data:{mime};base64,{image_b64}"
+            text_val = part.get("text")
+            if isinstance(text_val, str) and text_val.startswith(("http://", "https://", "data:image/")):
+                return text_val
+    return ""
+
+
+async def _generate_with_google_api(
     *,
     prompt: str,
-    model: str,
+    canonical_model: str,
     style_ref_images: List[str],
-    style_ref_labels: Optional[List[str]] = None,
-    trace_id: str = "unknown",
+    style_ref_labels: Optional[List[str]],
+    trace_id: str,
 ) -> str:
-    started_at = time.monotonic()
+    api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is required for Google API image generation")
+
+    model_name = _google_model_name(canonical_model)
+    base_url = os.getenv("STORYBUDDY_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    endpoint = f"{base_url}/models/{model_name}:generateContent?key={api_key}"
+    timeout_seconds = max(30.0, float(os.getenv("STORYBUDDY_GOOGLE_IMAGE_TIMEOUT_SECONDS", "90")))
+
+    parts: List[Dict[str, object]] = [
+        {
+            "text": (
+                f"{prompt} "
+                "Generate exactly one image response. "
+                "Use the provided reference images to preserve style and character consistency."
+            ).strip()
+        }
+    ]
+    for ref in style_ref_images[:3]:
+        inline = _data_url_to_inline_data(ref)
+        if inline:
+            parts.append({"inline_data": inline})
+
+    payload: Dict[str, object] = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseModalities": ["IMAGE"],
+        },
+    }
+    logger.info(
+        "google api request start trace=%s model=%s endpoint=%s refs=%s refNames=%s",
+        trace_id,
+        model_name,
+        endpoint,
+        len(style_ref_images),
+        ", ".join((style_ref_labels or [])[:3]) if style_ref_labels else "none",
+    )
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        response = await client.post(endpoint, headers={"Content-Type": "application/json"}, json=payload)
+    if response.status_code >= 400:
+        raise RuntimeError(f"google api image request failed ({response.status_code}): {response.text[:500]}")
+    data = response.json()
+    image_data_url = _extract_google_image_data_url(data)
+    if not image_data_url:
+        raise RuntimeError("google api image generation returned no image output")
+    logger.info(
+        "google api generation success trace=%s model=%s",
+        trace_id,
+        model_name,
+    )
+    return image_data_url
+
+
+async def _generate_with_replicate(
+    *,
+    prompt: str,
+    canonical_model: str,
+    style_ref_images: List[str],
+    style_ref_labels: Optional[List[str]],
+    trace_id: str,
+) -> str:
     token = os.getenv("REPLICATE_API_TOKEN", "").strip()
     if not token:
         raise RuntimeError("REPLICATE_API_TOKEN is required")
 
-    canonical_model = canonicalize_model(model)
-    owner, name = MODEL_SLUGS[canonical_model].split("/", 1)
+    owner, name = REPLICATE_MODEL_SLUGS[canonical_model].split("/", 1)
     base_url = os.getenv("STORYBUDDY_REPLICATE_BASE_URL", "https://api.replicate.com/v1").rstrip("/")
     wait_seconds = max(1, min(55, int(os.getenv("STORYBUDDY_REPLICATE_WAIT_SECONDS", "20"))))
     poll_interval_seconds = max(0.5, float(os.getenv("STORYBUDDY_REPLICATE_POLL_INTERVAL_SECONDS", "1.0")))
@@ -237,10 +382,41 @@ async def generate_image(
     image_url = _first_image_url(data.get("output"))
     if not image_url:
         raise RuntimeError("replicate succeeded but returned no image output")
+    return image_url
+
+
+async def generate_image(
+    *,
+    prompt: str,
+    model: str,
+    style_ref_images: List[str],
+    style_ref_labels: Optional[List[str]] = None,
+    trace_id: str = "unknown",
+) -> str:
+    started_at = time.monotonic()
+    canonical_model = canonicalize_model(model)
+    prepped_refs = _prepare_style_ref_images(style_ref_images)
+    if canonical_model in GOOGLE_MODEL_KEYS:
+        image_url = await _generate_with_google_api(
+            prompt=prompt,
+            canonical_model=canonical_model,
+            style_ref_images=prepped_refs,
+            style_ref_labels=style_ref_labels,
+            trace_id=trace_id,
+        )
+    else:
+        image_url = await _generate_with_replicate(
+            prompt=prompt,
+            canonical_model=canonical_model,
+            style_ref_images=prepped_refs,
+            style_ref_labels=style_ref_labels,
+            trace_id=trace_id,
+        )
     logger.info(
-        "replicate generation success trace=%s prediction=%s elapsedMs=%s",
+        "image generation success trace=%s provider=%s model=%s elapsedMs=%s",
         trace_id,
-        data.get("id"),
+        image_provider_for_model(canonical_model),
+        canonical_model,
         int((time.monotonic() - started_at) * 1000),
     )
     return image_url

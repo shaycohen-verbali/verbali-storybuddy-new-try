@@ -129,7 +129,7 @@ async def ask(req: AskRequest) -> AskResponse:
     except CardImageGenerationError as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Replicate image generation failed for {exc.card_id} using {exc.model}: {exc.detail}",
+            detail=f"Image generation failed for {exc.card_id} using {exc.model}: {exc.detail}",
         ) from exc
 
 
