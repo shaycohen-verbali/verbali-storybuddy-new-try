@@ -1,6 +1,7 @@
 const state = {
   packages: [],
   editingPackageId: null,
+  activeSetupPackage: null,
   styleRefs: [],
   characterImageHints: {},
   detectedCharacters: [],
@@ -116,6 +117,60 @@ function wireTabs() {
 }
 
 function wireSetup() {
+  const applySetupResult = (result, { saved }) => {
+    state.editingPackageId = result.package.id;
+    state.activeSetupPackage = result.package;
+    state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
+    state.detectedCharacters = getPackageCharacterProfiles(result.package).map((row) => row.name);
+    loadCharacterHintsFromPackage(result.package);
+    ensureCharacterMappingCoverage();
+    renderStyleRefEditor();
+    renderCharacterMapEditor();
+    upsertCachedPackage(result.package);
+
+    const mappedCharacters = (result.package.character_style_map || []).filter((m) => (m.ref_ids || []).length).length;
+    if (saved) {
+      setSetupNote(
+        `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${mappedCharacters} character-image mappings, ${result.learnedSummary.sceneMappings || 0} scene mappings.`
+      );
+    } else {
+      setSetupNote(
+        `AI preview ready: ${result.learnedSummary.characters} characters and ${mappedCharacters} character-image mappings detected.`
+      );
+    }
+  };
+
+  const buildSetupPayload = async () => {
+    const storyTitle = el.storyTitle.value.trim();
+    if (!storyTitle) {
+      throw new Error("Please enter a story title.");
+    }
+
+    const file = el.bookFile.files?.[0];
+    const isPdf = file && (/\.pdf$/i.test(file.name) || file.type === "application/pdf");
+    const styleRefs = state.styleRefs.length ? state.styleRefs : (currentEditingPackage()?.style_refs || []);
+    const bookText = el.bookText.value.trim() || null;
+    const pdfBase64 = isPdf && !bookText ? await fileToDataUrl(file) : null;
+
+    return {
+      packageId: state.editingPackageId,
+      storyTitle,
+      bookText,
+      pdfBase64,
+      styleRefs: styleRefs.map((ref, idx) => normalizeStyleRef(ref, `save-${idx}`)),
+      characterImageHints: buildCharacterImageHints(el.bookText.value, styleRefs),
+    };
+  };
+
+  const runSetupPreview = async () => {
+    const payload = await buildSetupPayload();
+    const result = await apiRequest("/api/setup/preview", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    applySetupResult(result, { saved: false });
+  };
+
   el.bookFile.addEventListener("change", async () => {
     const file = el.bookFile.files?.[0];
     if (!file) {
@@ -127,12 +182,20 @@ function wireSetup() {
 
     if (isText) {
       el.bookText.value = await file.text();
+      if (!el.storyTitle.value.trim()) {
+        el.storyTitle.value = file.name.replace(/\.(txt|md|json)$/i, "");
+      }
       state.detectedCharacters = extractCharacterHintsFromText(el.bookText.value || "");
       removeBookPageRefs();
       ensureCharacterMappingCoverage();
       renderStyleRefEditor();
       renderCharacterMapEditor();
-      setSetupNote("Loaded text file content.");
+      setSetupNote("Loaded text file content. Running AI character extraction...");
+      try {
+        await runSetupPreview();
+      } catch (err) {
+        setSetupNote(`Preview failed: ${readError(err)}`);
+      }
       return;
     }
 
@@ -159,6 +222,12 @@ function wireSetup() {
               extraction.pageCount === 1 ? "" : "s"
             }). Added ${extractedRefs.length} reference image${extractedRefs.length === 1 ? "" : "s"} from book pages.`
           );
+          try {
+            setSetupNote("PDF processed. Running AI character extraction...");
+            await runSetupPreview();
+          } catch (err) {
+            setSetupNote(`Preview failed: ${readError(err)}`);
+          }
         } else {
           setSetupNote("PDF selected, but text extraction was too short. You can still click Save to try server extraction.");
         }
@@ -215,16 +284,21 @@ function wireSetup() {
     renderCharacterMapEditor();
   });
 
-  el.learnBtn.addEventListener("click", () => {
+  el.learnBtn.addEventListener("click", async () => {
     const summary = localAnalyze(el.bookText.value || "");
     if (!summary) {
       setSetupNote("Add story text first, or upload a PDF and click Save.");
       return;
     }
 
-    setSetupNote(
-      `Preview: ${summary.facts} facts, ${summary.characters} characters, ${summary.objects} objects, ${summary.scenes} scenes.`
-    );
+    setSetupNote("Running AI setup preview...");
+    try {
+      await runSetupPreview();
+    } catch (err) {
+      setSetupNote(
+        `Preview failed: ${readError(err)}. Local preview: ${summary.facts} facts, ${summary.characters} characters, ${summary.objects} objects, ${summary.scenes} scenes.`
+      );
+    }
   });
 
   el.savePackageBtn.addEventListener("click", async () => {
@@ -239,36 +313,14 @@ function wireSetup() {
     el.savePackageBtn.textContent = "Saving...";
 
     try {
-      const file = el.bookFile.files?.[0];
-      const isPdf = file && (/\.pdf$/i.test(file.name) || file.type === "application/pdf");
-      const styleRefs = state.styleRefs.length ? state.styleRefs : (currentEditingPackage()?.style_refs || []);
-
-      const payload = {
-        packageId: state.editingPackageId,
-        storyTitle,
-        bookText: el.bookText.value.trim() || null,
-        pdfBase64: isPdf && !el.bookText.value.trim() ? await fileToDataUrl(file) : null,
-        styleRefs: styleRefs.map((ref, idx) => normalizeStyleRef(ref, `save-${idx}`)),
-        characterImageHints: buildCharacterImageHints(el.bookText.value, styleRefs),
-      };
+      const payload = await buildSetupPayload();
 
       const result = await apiRequest("/api/setup/ingest", {
         method: "POST",
         body: JSON.stringify(payload),
       });
 
-      state.editingPackageId = result.package.id;
-      state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
-      state.detectedCharacters = getPackageCharacterProfiles(result.package).map((row) => row.name);
-      loadCharacterHintsFromPackage(result.package);
-      ensureCharacterMappingCoverage();
-      renderStyleRefEditor();
-      renderCharacterMapEditor();
-      upsertCachedPackage(result.package);
-      const mappedCharacters = (result.package.character_style_map || []).filter((m) => (m.ref_ids || []).length).length;
-      setSetupNote(
-        `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${mappedCharacters} character-image mappings, ${result.learnedSummary.sceneMappings || 0} scene mappings.`
-      );
+      applySetupResult(result, { saved: true });
 
       await refreshPackages(result.package.id);
     } catch (err) {
@@ -427,6 +479,12 @@ async function refreshPackages(preferredId = "") {
     packages = loadCachedPackages();
   }
   state.packages = Array.isArray(packages) ? packages : [];
+  if (state.editingPackageId) {
+    const updated = state.packages.find((pkg) => pkg.id === state.editingPackageId);
+    if (updated) {
+      state.activeSetupPackage = updated;
+    }
+  }
   saveCachedPackages(state.packages);
   renderPackageSelect(preferredId);
   renderLibrary();
@@ -511,6 +569,7 @@ function loadPackageToSetup(packageId) {
   }
 
   state.editingPackageId = pkg.id;
+  state.activeSetupPackage = pkg;
   state.styleRefs = (pkg.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `pkg-${idx}`));
   state.detectedCharacters = getPackageCharacterProfiles(pkg).map((row) => row.name);
   loadCharacterHintsFromPackage(pkg);
@@ -745,11 +804,19 @@ function renderAskCharacterGallery() {
 }
 
 function currentEditingPackage() {
-  return state.packages.find((pkg) => pkg.id === state.editingPackageId);
+  const fromLibrary = state.packages.find((pkg) => pkg.id === state.editingPackageId);
+  if (fromLibrary) {
+    return fromLibrary;
+  }
+  if (state.activeSetupPackage && state.activeSetupPackage.id === state.editingPackageId) {
+    return state.activeSetupPackage;
+  }
+  return state.activeSetupPackage || null;
 }
 
 function resetSetup() {
   state.editingPackageId = null;
+  state.activeSetupPackage = null;
   state.styleRefs = [];
   state.characterImageHints = {};
   state.detectedCharacters = [];

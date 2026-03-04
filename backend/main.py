@@ -83,6 +83,20 @@ def setup_ingest(req: SetupIngestRequest) -> SetupIngestResponse:
     return result
 
 
+@app.post("/api/setup/preview", response_model=SetupIngestResponse)
+def setup_preview(req: SetupIngestRequest) -> SetupIngestResponse:
+    existing: StoryPackage | None = None
+    if req.package_id:
+        existing = load_package(req.package_id)
+
+    try:
+        result = ingest_setup(req, existing=existing)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return result
+
+
 @app.post("/api/ask", response_model=AskResponse)
 async def ask(req: AskRequest) -> AskResponse:
     package = req.package

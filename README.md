@@ -102,6 +102,7 @@ Ask behavior:
 - `GET /api/packages`
 - `GET /api/packages/{package_id}`
 - `DELETE /api/packages/{package_id}`
+- `POST /api/setup/preview` (AI preview without persisting package)
 - `POST /api/setup/ingest`
 - `POST /api/ask`
 
