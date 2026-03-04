@@ -2,6 +2,7 @@ const state = {
   packages: [],
   editingPackageId: null,
   styleRefs: [],
+  characterImageHints: {},
   latestDebugBundle: null,
   runtimeConfig: null,
   askTimer: {
@@ -30,6 +31,8 @@ const el = {
   styleRefs: document.getElementById("styleRefs"),
   styleRefList: document.getElementById("styleRefList"),
   clearRefsBtn: document.getElementById("clearRefsBtn"),
+  characterMapList: document.getElementById("characterMapList"),
+  autoMapCharactersBtn: document.getElementById("autoMapCharactersBtn"),
   learnBtn: document.getElementById("learnBtn"),
   savePackageBtn: document.getElementById("savePackageBtn"),
   resetSetupBtn: document.getElementById("resetSetupBtn"),
@@ -122,7 +125,9 @@ function wireSetup() {
     if (isText) {
       el.bookText.value = await file.text();
       removeBookPageRefs();
+      ensureCharacterMappingCoverage();
       renderStyleRefEditor();
+      renderCharacterMapEditor();
       setSetupNote("Loaded text file content.");
       return;
     }
@@ -136,7 +141,9 @@ function wireSetup() {
           normalizeStyleRef(ref, `book-${Date.now()}-${idx}`)
         );
         state.styleRefs = dedupeStyleRefs([...state.styleRefs, ...extractedRefs]);
+        ensureCharacterMappingCoverage();
         renderStyleRefEditor();
+        renderCharacterMapEditor();
         if (extraction.text && extraction.text.length >= 40) {
           el.bookText.value = extraction.text;
           if (!el.storyTitle.value.trim()) {
@@ -174,7 +181,9 @@ function wireSetup() {
       }))
     );
     state.styleRefs = dedupeStyleRefs([...state.styleRefs, ...loaded.map((ref, idx) => normalizeStyleRef(ref, `manual-${Date.now()}-${idx}`))]);
+    ensureCharacterMappingCoverage();
     renderStyleRefEditor();
+    renderCharacterMapEditor();
     el.styleRefs.value = "";
 
     setSetupNote(`Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}. Total reference images: ${state.styleRefs.length}.`);
@@ -182,8 +191,22 @@ function wireSetup() {
 
   el.clearRefsBtn.addEventListener("click", () => {
     state.styleRefs = [];
+    state.characterImageHints = {};
     renderStyleRefEditor();
+    renderCharacterMapEditor();
     setSetupNote("Cleared all reference images.");
+  });
+
+  el.autoMapCharactersBtn?.addEventListener("click", () => {
+    state.characterImageHints = buildAutoCharacterImageHints(el.bookText.value, state.styleRefs, deriveCharacterList());
+    ensureCharacterMappingCoverage();
+    renderCharacterMapEditor();
+    setSetupNote("Auto-mapped characters to reference images.");
+  });
+
+  el.bookText.addEventListener("input", () => {
+    ensureCharacterMappingCoverage();
+    renderCharacterMapEditor();
   });
 
   el.learnBtn.addEventListener("click", () => {
@@ -230,10 +253,14 @@ function wireSetup() {
 
       state.editingPackageId = result.package.id;
       state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
+      loadCharacterHintsFromPackage(result.package);
+      ensureCharacterMappingCoverage();
       renderStyleRefEditor();
+      renderCharacterMapEditor();
       upsertCachedPackage(result.package);
+      const mappedCharacters = (result.package.character_style_map || []).filter((m) => (m.ref_ids || []).length).length;
       setSetupNote(
-        `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${result.learnedSummary.characterMappings} character mappings, ${result.learnedSummary.sceneMappings || 0} scene mappings.`
+        `Saved ${result.package.title}. Learned ${result.learnedSummary.facts} facts, ${result.learnedSummary.characters} characters, ${mappedCharacters} character-image mappings, ${result.learnedSummary.sceneMappings || 0} scene mappings.`
       );
 
       await refreshPackages(result.package.id);
@@ -251,6 +278,7 @@ function wireSetup() {
   });
 
   renderStyleRefEditor();
+  renderCharacterMapEditor();
 }
 
 function wireAsk() {
@@ -471,12 +499,15 @@ function loadPackageToSetup(packageId) {
 
   state.editingPackageId = pkg.id;
   state.styleRefs = (pkg.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `pkg-${idx}`));
+  loadCharacterHintsFromPackage(pkg);
+  ensureCharacterMappingCoverage();
   el.storyTitle.value = pkg.title || "";
   el.bookText.value = pkg.raw_text || "";
   el.bookFile.value = "";
   renderStyleRefEditor();
+  renderCharacterMapEditor();
   setSetupNote(
-    `Loaded ${pkg.title}. Character mappings: ${(pkg.character_style_map || []).filter((m) => (m.ref_ids || []).length).length}, Scene mappings: ${(pkg.scene_style_map || []).filter((m) => (m.ref_ids || []).length).length}`
+    `Loaded ${pkg.title}. Character-image mappings: ${(pkg.character_style_map || []).filter((m) => (m.ref_ids || []).length).length}, Scene mappings: ${(pkg.scene_style_map || []).filter((m) => (m.ref_ids || []).length).length}`
   );
 }
 
@@ -569,11 +600,13 @@ function currentEditingPackage() {
 function resetSetup() {
   state.editingPackageId = null;
   state.styleRefs = [];
+  state.characterImageHints = {};
   el.storyTitle.value = "";
   el.bookText.value = "";
   el.bookFile.value = "";
   el.styleRefs.value = "";
   renderStyleRefEditor();
+  renderCharacterMapEditor();
 }
 
 function activateTab(name) {
@@ -604,11 +637,39 @@ function localAnalyze(text) {
 }
 
 function buildCharacterImageHints(text, styleRefs) {
-  const characters = extractCharacterHintsFromText(text);
+  const characters = deriveCharacterList();
+  const auto = buildAutoCharacterImageHints(text, styleRefs, characters);
+  const hintMap = {};
+
+  characters.forEach((character) => {
+    const manual = toHintList(state.characterImageHints[character] || []).filter((id) =>
+      styleRefs.some((ref) => ref.id === id)
+    );
+    const chosen = manual.length ? manual : toHintList(auto[character] || []);
+    if (chosen.length) {
+      hintMap[character] = chosen.slice(0, 2);
+    }
+  });
+
+  return hintMap;
+}
+
+function deriveCharacterList() {
+  const pkg = currentEditingPackage();
+  const packageCharacters = Array.isArray(pkg?.characters) ? pkg.characters : [];
+  const textCharacters = extractCharacterHintsFromText(el.bookText.value || "");
+  return dedupeStrings([...packageCharacters, ...textCharacters].map((name) => String(name || "").trim()).filter(Boolean));
+}
+
+function buildAutoCharacterImageHints(text, styleRefs, characters) {
   const hints = {};
+  const selectedCharacters = Array.isArray(characters) && characters.length ? characters : extractCharacterHintsFromText(text);
 
   styleRefs.forEach((ref) => {
     toHintList(ref.characterHints).forEach((character) => {
+      if (!selectedCharacters.includes(character)) {
+        return;
+      }
       if (!hints[character]) {
         hints[character] = [];
       }
@@ -618,12 +679,12 @@ function buildCharacterImageHints(text, styleRefs) {
     });
   });
 
-  characters.forEach((character) => {
-    const tokens = character.toLowerCase().split(/\s+/);
+  selectedCharacters.forEach((character) => {
+    const tokens = character.toLowerCase().split(/\s+/).filter(Boolean);
     const ids = styleRefs
       .filter((ref) => {
-        const blob = `${ref.name} ${ref.pageTextSnippet || ""}`.toLowerCase();
-        return tokens.some((tok) => blob.includes(tok));
+        const blob = `${ref.name} ${(ref.pageTextSnippet || "").slice(0, 220)} ${(ref.characterHints || []).join(" ")}`.toLowerCase();
+        return tokens.some((tok) => tok.length >= 3 && blob.includes(tok));
       })
       .map((ref) => ref.id)
       .slice(0, 2);
@@ -632,7 +693,48 @@ function buildCharacterImageHints(text, styleRefs) {
     }
   });
 
+  const firstRefId = styleRefs[0]?.id;
+  if (firstRefId) {
+    selectedCharacters.forEach((character) => {
+      if (!(hints[character] || []).length) {
+        hints[character] = [firstRefId];
+      }
+    });
+  }
+
   return hints;
+}
+
+function loadCharacterHintsFromPackage(pkg) {
+  const next = {};
+  (pkg?.character_style_map || []).forEach((row) => {
+    const character = String(row.character || "").trim();
+    if (!character) {
+      return;
+    }
+    const ids = toHintList(row.ref_ids || []).filter((id) => state.styleRefs.some((ref) => ref.id === id));
+    if (ids.length) {
+      next[character] = ids.slice(0, 2);
+    }
+  });
+  state.characterImageHints = next;
+}
+
+function ensureCharacterMappingCoverage() {
+  const characters = deriveCharacterList();
+  const auto = buildAutoCharacterImageHints(el.bookText.value, state.styleRefs, characters);
+  const validRefIds = new Set(state.styleRefs.map((ref) => ref.id));
+  const next = {};
+
+  characters.forEach((character) => {
+    const existing = toHintList(state.characterImageHints[character] || []).filter((id) => validRefIds.has(id));
+    const chosen = existing.length ? existing : toHintList(auto[character] || []);
+    if (chosen.length) {
+      next[character] = chosen.slice(0, 2);
+    }
+  });
+
+  state.characterImageHints = next;
 }
 
 function normalizeStyleRef(raw, fallbackId) {
@@ -724,6 +826,8 @@ function renderStyleRefEditor() {
     nameInput.placeholder = "Reference name";
     nameInput.addEventListener("input", () => {
       ref.name = nameInput.value.trim() || ref.id;
+      ensureCharacterMappingCoverage();
+      renderCharacterMapEditor();
     });
     fields.appendChild(wrapRefField("Name", nameInput));
 
@@ -732,6 +836,8 @@ function renderStyleRefEditor() {
     charsInput.placeholder = "Character hints (comma separated)";
     charsInput.addEventListener("input", () => {
       ref.characterHints = toHintList(charsInput.value);
+      ensureCharacterMappingCoverage();
+      renderCharacterMapEditor();
     });
     fields.appendChild(wrapRefField("Character hints", charsInput));
 
@@ -749,13 +855,105 @@ function renderStyleRefEditor() {
     removeBtn.textContent = "Remove";
     removeBtn.addEventListener("click", () => {
       state.styleRefs = state.styleRefs.filter((entry) => entry.id !== ref.id);
+      ensureCharacterMappingCoverage();
       renderStyleRefEditor();
+      renderCharacterMapEditor();
     });
     fields.appendChild(removeBtn);
 
     card.appendChild(preview);
     card.appendChild(fields);
     el.styleRefList.appendChild(card);
+  });
+}
+
+function renderCharacterMapEditor() {
+  if (!el.characterMapList) {
+    return;
+  }
+
+  el.characterMapList.innerHTML = "";
+  const characters = deriveCharacterList();
+  if (!characters.length) {
+    const empty = document.createElement("p");
+    empty.className = "inline-note";
+    empty.textContent = "No characters detected yet. Add book text or save the package first.";
+    el.characterMapList.appendChild(empty);
+    return;
+  }
+
+  if (!state.styleRefs.length) {
+    const empty = document.createElement("p");
+    empty.className = "inline-note";
+    empty.textContent = "No reference images available yet. Upload PDF/image refs to map character images.";
+    el.characterMapList.appendChild(empty);
+    return;
+  }
+
+  ensureCharacterMappingCoverage();
+
+  characters.forEach((character) => {
+    const mappedIds = toHintList(state.characterImageHints[character] || []);
+    const selectedRefId = mappedIds[0] || "";
+    const selectedRef = state.styleRefs.find((ref) => ref.id === selectedRefId) || null;
+
+    const card = document.createElement("article");
+    card.className = "characterMapItem";
+
+    const previewWrap = document.createElement("div");
+    previewWrap.className = "characterMapItem__previewWrap";
+    const preview = document.createElement("img");
+    preview.className = "characterMapItem__preview";
+    preview.alt = selectedRef ? `${character} mapped reference` : `${character} no mapped reference`;
+    preview.src =
+      selectedRef?.dataUrl ||
+      "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='180'%3E%3Crect width='100%25' height='100%25' fill='%23f3efe2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%237a7567' font-size='14' font-family='Arial'%3ENo image%3C/text%3E%3C/svg%3E";
+    previewWrap.appendChild(preview);
+
+    const fields = document.createElement("div");
+    fields.className = "characterMapItem__fields";
+
+    const title = document.createElement("h4");
+    title.className = "characterMapItem__title";
+    title.textContent = character;
+    fields.appendChild(title);
+
+    const status = document.createElement("p");
+    status.className = "characterMapItem__meta";
+    status.textContent = selectedRef ? `Mapped to: ${selectedRef.name}` : "Not mapped";
+    fields.appendChild(status);
+
+    const select = document.createElement("select");
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "Select image reference";
+    select.appendChild(blank);
+
+    state.styleRefs.forEach((ref) => {
+      const option = document.createElement("option");
+      option.value = ref.id;
+      option.textContent = `${ref.name}${ref.pageNumber ? ` (page ${ref.pageNumber})` : ""}`;
+      if (ref.id === selectedRefId) {
+        option.selected = true;
+      }
+      select.appendChild(option);
+    });
+
+    select.addEventListener("change", () => {
+      const value = select.value.trim();
+      if (!value) {
+        delete state.characterImageHints[character];
+      } else {
+        state.characterImageHints[character] = [value];
+      }
+      ensureCharacterMappingCoverage();
+      renderCharacterMapEditor();
+    });
+
+    fields.appendChild(wrapRefField("Reference image", select));
+    card.appendChild(previewWrap);
+    card.appendChild(fields);
+    el.characterMapList.appendChild(card);
   });
 }
 
