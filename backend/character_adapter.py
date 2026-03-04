@@ -69,6 +69,48 @@ def _clean_description(text: str) -> str:
     return out
 
 
+def _clean_species(text: str) -> str:
+    out = re.sub(r"\s+", " ", str(text or "").strip())
+    out = re.sub(r"[^A-Za-z\s/-]", "", out).strip()
+    words = out.split()
+    if len(words) > 4:
+        out = " ".join(words[:4])
+    return out.title()
+
+
+def _clean_visual_vibe(text: str) -> str:
+    out = _clean_description(text)
+    words = out.split()
+    if len(words) > 12:
+        out = " ".join(words[:12])
+    return out
+
+
+def _clean_appearance_traits(value: object) -> List[str]:
+    raw_items: List[str] = []
+    if isinstance(value, list):
+        raw_items = [str(item) for item in value]
+    elif isinstance(value, str):
+        raw_items = [part.strip() for part in value.split(",")]
+    out: List[str] = []
+    seen = set()
+    for item in raw_items:
+        cleaned = _clean_description(item)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        words = cleaned.split()
+        if len(words) > 10:
+            cleaned = " ".join(words[:10])
+        out.append(cleaned)
+        if len(out) >= 8:
+            break
+    return out
+
+
 def _is_bad_character_name(name: str) -> bool:
     if len(name) < 2:
         return True
@@ -89,7 +131,7 @@ def extract_character_profiles_with_gemini(
     raw_text: str,
     facts: List[str],
     heuristic_characters: List[str],
-) -> List[Dict[str, str]]:
+) -> List[Dict[str, object]]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is required for AI character extraction")
@@ -101,13 +143,16 @@ def extract_character_profiles_with_gemini(
     facts_blob = "\n".join(f"- {f}" for f in facts[:40])
     heur_blob = ", ".join(heuristic_characters[:20]) or "none"
     prompt = (
-        "Extract only real character names from this children's story and provide a short visual description for each.\n"
+        "Extract only real character names from this children's story and provide structured visual appearance details.\n"
         "Return ONLY valid JSON with this exact shape:\n"
-        '{"characters":[{"name":"...","description":"..."}]}\n'
+        '{"characters":[{"name":"...","species":"...","description":"...","appearanceTraits":["..."],"visualVibe":"..."}]}\n'
         "Rules:\n"
         "- Include major recurring characters only (max 12).\n"
         "- Exclude titles, page labels, copyright/publisher text, weekdays, and random nouns.\n"
-        "- Use concise visual descriptions (6-20 words) helpful for finding that character in book illustrations.\n"
+        "- description: concise visual summary (8-24 words) to help identify the character in illustrations.\n"
+        "- species: animal/human role if known (for example Elephant, Human boy, Owl teacher).\n"
+        "- appearanceTraits: 3-8 short bullet-like traits (colors, clothing, objects, posture, accessories).\n"
+        "- visualVibe: short style-emotion phrase (2-10 words).\n"
         "- Keep names in title case.\n\n"
         f"Story title: {story_title}\n"
         f"Heuristic names (may include noise): {heur_blob}\n"
@@ -138,13 +183,16 @@ def extract_character_profiles_with_gemini(
     if not isinstance(items, list):
         raise RuntimeError("gemini character extraction returned invalid schema")
 
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, object]] = []
     seen = set()
     for item in items:
         if not isinstance(item, dict):
             continue
         name = _clean_name(str(item.get("name", "")))
         description = _clean_description(str(item.get("description", "")))
+        species = _clean_species(str(item.get("species", "")))
+        appearance_traits = _clean_appearance_traits(item.get("appearanceTraits", item.get("appearance_traits", [])))
+        visual_vibe = _clean_visual_vibe(str(item.get("visualVibe", item.get("visual_vibe", ""))))
         if not name or _is_bad_character_name(name):
             continue
         key = name.lower()
@@ -153,7 +201,21 @@ def extract_character_profiles_with_gemini(
         seen.add(key)
         if not description:
             description = "Main character in the story."
-        out.append({"name": name, "description": description})
+        if not species:
+            species = "Unknown"
+        if not appearance_traits:
+            appearance_traits = [description]
+        if not visual_vibe:
+            visual_vibe = "Friendly storybook character"
+        out.append(
+            {
+                "name": name,
+                "description": description,
+                "species": species,
+                "appearanceTraits": appearance_traits,
+                "visualVibe": visual_vibe,
+            }
+        )
         if len(out) >= 12:
             break
 

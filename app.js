@@ -17,7 +17,7 @@ const state = {
 };
 
 const API_BASE = window.STORYBUDDY_API_BASE || "";
-const PACKAGE_CACHE_KEY = "storybuddy.packages.v1";
+const PACKAGE_CACHE_KEY = "storybuddy.packages.v2";
 
 const el = {
   tabs: Array.from(document.querySelectorAll(".tab")),
@@ -620,22 +620,32 @@ function getPackageCharacterProfiles(pkg) {
     .map((row) => ({
       name: String(row?.name || "").trim(),
       description: String(row?.description || "").trim(),
+      species: String(row?.species || "").trim(),
+      appearanceTraits: toHintList(row?.appearance_traits || row?.appearanceTraits || []),
+      visualVibe: String(row?.visual_vibe || row?.visualVibe || "").trim(),
     }))
     .filter((row) => row.name);
   if (profiles.length) {
     return profiles;
   }
   const names = Array.isArray(pkg.characters) ? pkg.characters : [];
-  return names.map((name) => ({ name: String(name || "").trim(), description: "" })).filter((row) => row.name);
+  return names
+    .map((name) => ({
+      name: String(name || "").trim(),
+      description: "",
+      species: "",
+      appearanceTraits: [],
+      visualVibe: "",
+    }))
+    .filter((row) => row.name);
 }
 
-function findCharacterDescription(pkg, name) {
+function findCharacterProfile(pkg, name) {
   const target = String(name || "").trim().toLowerCase();
   if (!target) {
-    return "";
+    return null;
   }
-  const match = getPackageCharacterProfiles(pkg).find((row) => row.name.toLowerCase() === target);
-  return match?.description || "";
+  return getPackageCharacterProfiles(pkg).find((row) => row.name.toLowerCase() === target) || null;
 }
 
 function selectedAskPackage() {
@@ -681,6 +691,11 @@ function renderAskCharacterGallery() {
     const refIds = toHintList(mapRow?.ref_ids || []);
     const mappedRef = refLookup.get(refIds[0] || "") || null;
     const description = mapRow?.description || characterProfile.description || "";
+    const species = mapRow?.species || characterProfile.species || "";
+    const visualVibe = mapRow?.visual_vibe || mapRow?.visualVibe || characterProfile.visualVibe || "";
+    const appearanceTraits = toHintList(
+      mapRow?.appearance_traits || mapRow?.appearanceTraits || characterProfile.appearanceTraits || []
+    );
 
     const card = document.createElement("article");
     card.className = "characterGalleryItem";
@@ -699,14 +714,31 @@ function renderAskCharacterGallery() {
     const meta = document.createElement("p");
     meta.className = "characterGalleryItem__meta";
     meta.textContent = description || "No description yet";
+    const speciesMeta = document.createElement("p");
+    speciesMeta.className = "characterGalleryItem__meta";
+    speciesMeta.textContent = species ? `Species: ${species}` : "Species: unknown";
+    const vibeMeta = document.createElement("p");
+    vibeMeta.className = "characterGalleryItem__meta";
+    vibeMeta.textContent = visualVibe ? `Visual vibe: ${visualVibe}` : "";
 
     const mapping = document.createElement("p");
     mapping.className = "characterGalleryItem__meta";
     mapping.textContent = mappedRef ? `Image: ${mappedRef.name}` : "Image: no mapping";
 
+    const traits = document.createElement("p");
+    traits.className = "characterGalleryItem__meta";
+    traits.textContent = appearanceTraits.length
+      ? `Traits: ${appearanceTraits.slice(0, 4).join(", ")}`
+      : "Traits: not available";
+
     card.appendChild(img);
     card.appendChild(name);
     card.appendChild(meta);
+    card.appendChild(speciesMeta);
+    if (vibeMeta.textContent) {
+      card.appendChild(vibeMeta);
+    }
+    card.appendChild(traits);
     card.appendChild(mapping);
     el.askCharacterGallery.appendChild(card);
   });
@@ -1021,7 +1053,11 @@ function renderCharacterMapEditor() {
     const mappedIds = toHintList(state.characterImageHints[character] || []);
     const selectedRefId = mappedIds[0] || "";
     const selectedRef = state.styleRefs.find((ref) => ref.id === selectedRefId) || null;
-    const description = findCharacterDescription(pkg, character);
+    const profile = findCharacterProfile(pkg, character);
+    const description = profile?.description || "";
+    const species = profile?.species || "";
+    const vibe = profile?.visualVibe || "";
+    const traits = toHintList(profile?.appearanceTraits || []);
 
     const card = document.createElement("article");
     card.className = "characterMapItem";
@@ -1048,6 +1084,25 @@ function renderCharacterMapEditor() {
     desc.className = "characterMapItem__meta";
     desc.textContent = description || "No character description yet. Save setup to generate AI descriptions.";
     fields.appendChild(desc);
+
+    const speciesRow = document.createElement("p");
+    speciesRow.className = "characterMapItem__meta";
+    speciesRow.textContent = species ? `Species: ${species}` : "Species: unknown";
+    fields.appendChild(speciesRow);
+
+    if (vibe) {
+      const vibeRow = document.createElement("p");
+      vibeRow.className = "characterMapItem__meta";
+      vibeRow.textContent = `Visual vibe: ${vibe}`;
+      fields.appendChild(vibeRow);
+    }
+
+    if (traits.length) {
+      const traitsRow = document.createElement("p");
+      traitsRow.className = "characterMapItem__meta";
+      traitsRow.textContent = `Traits: ${traits.slice(0, 4).join(", ")}`;
+      fields.appendChild(traitsRow);
+    }
 
     const status = document.createElement("p");
     status.className = "characterMapItem__meta";

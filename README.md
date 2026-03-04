@@ -112,7 +112,7 @@ Ask behavior:
 - Browser PDF reference extraction now crops text-heavy sidebars and prefers illustration regions.
 - Setup includes a reference image editor so users can rename, remove, and adjust character/scene hints before saving.
 - Setup includes a Character Image Mapping editor that auto-maps every detected character to a reference image, shows previews, and allows per-character reassignment before save.
-- Setup character list now comes from Gemini extraction (`character_profiles`) with short per-character descriptions used as image-mapping hints.
+- Setup character list now comes from Gemini extraction (`character_profiles`) with structured details (`species`, `appearanceTraits`, `visualVibe`, `description`) used as image-mapping hints.
 - Library includes an "Add New Book" action that resets setup into create mode.
 - Library packages are cached in browser local storage so refresh keeps recent books when serverless storage is empty.
 - Ask UI includes a live elapsed timer from click until all card images are loaded.

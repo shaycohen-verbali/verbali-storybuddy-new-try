@@ -23,6 +23,9 @@ class StyleRef(BaseModel):
 class CharacterStyleMap(BaseModel):
     character: str
     description: str = ""
+    species: str = ""
+    appearance_traits: List[str] = Field(default_factory=list)
+    visual_vibe: str = ""
     ref_ids: List[str] = Field(default_factory=list)
     confidence: float = 0.0
 
@@ -42,6 +45,9 @@ class StyleProfile(BaseModel):
 class CharacterProfile(BaseModel):
     name: str
     description: str = ""
+    species: str = ""
+    appearance_traits: List[str] = Field(default_factory=list)
+    visual_vibe: str = ""
 
 
 class StoryPackage(BaseModel):

@@ -106,14 +106,20 @@ def ingest_setup(req: SetupIngestRequest, existing: StoryPackage | None = None) 
         heuristic_characters=learned["characters"],
     )
     if character_profiles:
-        learned["characters"] = [row["name"] for row in character_profiles]
+        learned["characters"] = [str(row.get("name", "")) for row in character_profiles if str(row.get("name", "")).strip()]
     style_refs = normalize_style_refs(req.style_refs or (existing.style_refs if existing else []))
     style_profile = build_style_profile(style_refs, text)
     character_map = build_character_style_map(
         characters=learned["characters"],
         style_refs=style_refs,
         explicit_hints=req.character_image_hints,
-        descriptions={row["name"]: row["description"] for row in character_profiles},
+        descriptions={str(row.get("name", "")): str(row.get("description", "")) for row in character_profiles},
+        species_by_name={str(row.get("name", "")): str(row.get("species", "")) for row in character_profiles},
+        traits_by_name={
+            str(row.get("name", "")): [str(item) for item in (row.get("appearanceTraits", []) or [])]
+            for row in character_profiles
+        },
+        vibe_by_name={str(row.get("name", "")): str(row.get("visualVibe", "")) for row in character_profiles},
     )
     scene_map = build_scene_style_map(
         scenes=learned["scenes"],
@@ -129,7 +135,17 @@ def ingest_setup(req: SetupIngestRequest, existing: StoryPackage | None = None) 
         facts=learned["facts"],
         scenes=learned["scenes"],
         characters=learned["characters"],
-        character_profiles=[CharacterProfile(name=row["name"], description=row["description"]) for row in character_profiles],
+        character_profiles=[
+            CharacterProfile(
+                name=str(row.get("name", "")),
+                description=str(row.get("description", "")),
+                species=str(row.get("species", "")),
+                appearance_traits=[str(item) for item in (row.get("appearanceTraits", []) or [])],
+                visual_vibe=str(row.get("visualVibe", "")),
+            )
+            for row in character_profiles
+            if str(row.get("name", "")).strip()
+        ],
         objects=learned["objects"],
         style_refs=style_refs,
         style_profile=style_profile,
@@ -158,7 +174,7 @@ def build_character_profiles(
     raw_text: str,
     facts: List[str],
     heuristic_characters: List[str],
-) -> List[Dict[str, str]]:
+) -> List[Dict[str, object]]:
     try:
         rows = extract_character_profiles_with_gemini(
             story_title=story_title,
@@ -181,8 +197,8 @@ def build_character_profiles(
         raise ValueError(f"AI character extraction failed: {exc}") from exc
 
 
-def build_fallback_character_profiles(characters: List[str], facts: List[str]) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
+def build_fallback_character_profiles(characters: List[str], facts: List[str]) -> List[Dict[str, object]]:
+    out: List[Dict[str, object]] = []
     seen = set()
     for character in characters[:12]:
         name = character.strip()
@@ -197,7 +213,15 @@ def build_fallback_character_profiles(characters: List[str], facts: List[str]) -
         if fact:
             snippet = strip_page_markers(fact)
             description = truncate(snippet, 120)
-        out.append({"name": name, "description": description})
+        out.append(
+            {
+                "name": name,
+                "description": description,
+                "species": "Unknown",
+                "appearanceTraits": [description],
+                "visualVibe": "Friendly storybook character",
+            }
+        )
     return out
 
 
@@ -293,16 +317,34 @@ def _ref_text_blob(ref: StyleRef) -> str:
     return " ".join(part for part in parts if part).lower()
 
 
-def _score_ref_for_character(ref: StyleRef, character: str) -> int:
+def _score_ref_for_character(
+    ref: StyleRef,
+    character: str,
+    *,
+    description: str = "",
+    species: str = "",
+    appearance_traits: List[str] | None = None,
+) -> int:
     score = 0
     target = character.strip().lower()
     tokens = tokenize_name(character)
+    description = description.strip().lower()
+    species = species.strip().lower()
+    trait_tokens: List[str] = []
+    for trait in (appearance_traits or []):
+        trait_tokens.extend(tokenize(trait))
     blob = _ref_text_blob(ref)
 
     if any(target == hint.lower() for hint in ref.character_hints):
         score += 8
     if target in blob:
         score += 4
+    if species and species in blob:
+        score += 2
+    if description:
+        score += sum(1 for tok in tokenize(description) if tok in blob)
+    if trait_tokens:
+        score += sum(1 for tok in trait_tokens if tok in blob)
     score += sum(2 for tok in tokens if tok in ref.name.lower())
     score += sum(1 for tok in tokens if tok in blob)
     return score
@@ -329,8 +371,14 @@ def build_character_style_map(
     style_refs: List[StyleRef],
     explicit_hints: Dict[str, List[str]],
     descriptions: Dict[str, str] | None = None,
+    species_by_name: Dict[str, str] | None = None,
+    traits_by_name: Dict[str, List[str]] | None = None,
+    vibe_by_name: Dict[str, str] | None = None,
 ) -> List[CharacterStyleMap]:
     descriptions = descriptions or {}
+    species_by_name = species_by_name or {}
+    traits_by_name = traits_by_name or {}
+    vibe_by_name = vibe_by_name or {}
     ref_lookup = {r.id: r for r in style_refs}
     rows: List[CharacterStyleMap] = []
 
@@ -346,14 +394,32 @@ def build_character_style_map(
                     CharacterStyleMap(
                         character=character,
                         description=descriptions.get(character, ""),
+                        species=species_by_name.get(character, ""),
+                        appearance_traits=traits_by_name.get(character, [])[:8],
+                        visual_vibe=vibe_by_name.get(character, ""),
                         ref_ids=matched_ids[:2],
                         confidence=0.95,
                     )
                 )
                 continue
 
+        description = descriptions.get(character, "")
+        species = species_by_name.get(character, "")
+        appearance_traits = traits_by_name.get(character, [])
         scored = sorted(
-            ((_score_ref_for_character(ref, character), ref.id) for ref in style_refs),
+            (
+                (
+                    _score_ref_for_character(
+                        ref,
+                        character,
+                        description=description,
+                        species=species,
+                        appearance_traits=appearance_traits,
+                    ),
+                    ref.id,
+                )
+                for ref in style_refs
+            ),
             reverse=True,
         )
         for score, ref_id in scored:
@@ -377,6 +443,9 @@ def build_character_style_map(
             CharacterStyleMap(
                 character=character,
                 description=descriptions.get(character, ""),
+                species=species_by_name.get(character, ""),
+                appearance_traits=traits_by_name.get(character, [])[:8],
+                visual_vibe=vibe_by_name.get(character, ""),
                 ref_ids=matched_ids[:2],
                 confidence=confidence,
             )
