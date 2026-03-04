@@ -114,6 +114,7 @@ Ask behavior:
 - Browser PDF reference extraction now crops text-heavy sidebars and prefers illustration regions.
 - Setup includes a reference image editor so users can rename, remove, and adjust character/scene hints before saving.
 - Setup includes a Character Image Mapping editor that auto-maps every detected character to a reference image, shows previews, and allows per-character reassignment before save.
+- Setup now auto-fills `Story title` from PDF metadata/file name and allows direct per-character image upload inside the Character Image Mapping section.
 - Setup character list now comes from Gemini extraction (`character_profiles`) with structured details (`species`, `appearanceTraits`, `visualVibe`, `description`) used as image-mapping hints.
 - Character extraction sends the uploaded PDF file to Gemini (when available), not just extracted text, for better character identification.
 - Library includes an "Add New Book" action that resets setup into create mode.

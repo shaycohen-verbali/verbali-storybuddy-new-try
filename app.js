@@ -120,6 +120,7 @@ function wireSetup() {
   const applySetupResult = (result, { saved }) => {
     state.editingPackageId = result.package.id;
     state.activeSetupPackage = result.package;
+    el.storyTitle.value = result.package.title || el.storyTitle.value;
     state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
     state.detectedCharacters = getPackageCharacterProfiles(result.package).map((row) => row.name);
     loadCharacterHintsFromPackage(result.package);
@@ -202,6 +203,9 @@ function wireSetup() {
     if (isPdf) {
       setSetupNote("PDF selected. Extracting text...");
       try {
+        if (!el.storyTitle.value.trim()) {
+          el.storyTitle.value = file.name.replace(/\.pdf$/i, "");
+        }
         const extraction = await extractPdfTextFromFile(file);
         removeBookPageRefs();
         const extractedRefs = (extraction.styleRefs || []).map((ref, idx) =>
@@ -211,12 +215,12 @@ function wireSetup() {
         ensureCharacterMappingCoverage();
         renderStyleRefEditor();
         renderCharacterMapEditor();
+        if (extraction.title && extraction.title.trim()) {
+          el.storyTitle.value = extraction.title.trim();
+        }
         if (extraction.text && extraction.text.length >= 40) {
           el.bookText.value = extraction.text;
           state.detectedCharacters = extractCharacterHintsFromText(el.bookText.value || "");
-          if (!el.storyTitle.value.trim()) {
-            el.storyTitle.value = file.name.replace(/\.pdf$/i, "");
-          }
           setSetupNote(
             `Extracted text from PDF (${extraction.method}, ${extraction.pageCount} page${
               extraction.pageCount === 1 ? "" : "s"
@@ -1115,11 +1119,10 @@ function renderCharacterMapEditor() {
   }
 
   if (!state.styleRefs.length) {
-    const empty = document.createElement("p");
-    empty.className = "inline-note";
-    empty.textContent = "No reference images available yet. Upload PDF/image refs to map character images.";
-    el.characterMapList.appendChild(empty);
-    return;
+    const note = document.createElement("p");
+    note.className = "inline-note";
+    note.textContent = "No reference images yet. Add an image per character below or upload global references above.";
+    el.characterMapList.appendChild(note);
   }
 
   ensureCharacterMappingCoverage();
@@ -1213,6 +1216,45 @@ function renderCharacterMapEditor() {
     });
 
     fields.appendChild(wrapRefField("Reference image", select));
+
+    const uploadInput = document.createElement("input");
+    uploadInput.type = "file";
+    uploadInput.accept = "image/*";
+    uploadInput.addEventListener("change", async () => {
+      const file = uploadInput.files?.[0];
+      if (!file) {
+        return;
+      }
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        const refId = `char-ref-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        const newRef = normalizeStyleRef(
+          {
+            id: refId,
+            name: `${character} - ${file.name}`,
+            dataUrl,
+            characterHints: [character],
+            sceneHints: [],
+            sourceType: "manual_character",
+            pageNumber: null,
+            pageTextSnippet: "",
+          },
+          refId
+        );
+        state.styleRefs = dedupeStyleRefs([...state.styleRefs, newRef]);
+        state.characterImageHints[character] = [newRef.id];
+        ensureCharacterMappingCoverage();
+        renderStyleRefEditor();
+        renderCharacterMapEditor();
+        setSetupNote(`Added image for ${character}.`);
+      } catch (err) {
+        setSetupNote(`Failed to add image for ${character}: ${readError(err)}`);
+      } finally {
+        uploadInput.value = "";
+      }
+    });
+    fields.appendChild(wrapRefField(`Add image for ${character}`, uploadInput));
+
     card.appendChild(previewWrap);
     card.appendChild(fields);
     el.characterMapList.appendChild(card);
@@ -1338,6 +1380,7 @@ function fileToDataUrl(file) {
 
 async function extractPdfTextFromFile(file) {
   const arrayBuffer = await file.arrayBuffer();
+  const fileTitle = file.name.replace(/\.pdf$/i, "");
 
   try {
     const pdfJs = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs");
@@ -1347,6 +1390,16 @@ async function extractPdfTextFromFile(file) {
     }
 
     const doc = await pdfJs.getDocument({ data: arrayBuffer }).promise;
+    let detectedTitle = fileTitle;
+    try {
+      const meta = await doc.getMetadata();
+      const infoTitle = String(meta?.info?.Title || "").trim();
+      const dcTitle = String(meta?.metadata?.get?.("dc:title") || "").trim();
+      detectedTitle = normalizePdfTitle(infoTitle || dcTitle || fileTitle);
+    } catch {
+      detectedTitle = normalizePdfTitle(fileTitle);
+    }
+
     const pages = [];
     const styleRefs = [];
     const maxRefPages = Math.min(doc.numPages, 8);
@@ -1385,6 +1438,7 @@ async function extractPdfTextFromFile(file) {
     }
 
     return {
+      title: detectedTitle,
       text: cleanExtractedText(pages.join("\n\n")),
       pageCount: doc.numPages,
       method: "pdf.js",
@@ -1392,6 +1446,7 @@ async function extractPdfTextFromFile(file) {
     };
   } catch {
     return {
+      title: normalizePdfTitle(fileTitle),
       text: extractPdfTextHeuristic(arrayBuffer),
       pageCount: 1,
       method: "heuristic",
@@ -1436,6 +1491,23 @@ function decodePdfLiteralString(input) {
       return map[token] || token;
     })
     .replace(/\\([0-7]{1,3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
+}
+
+function normalizePdfTitle(title) {
+  const raw = String(title || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const stripped = raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  const lower = stripped.toLowerCase();
+  const bad = new Set(["untitled", "document", "microsoft word", "adobe indesign"]);
+  if (bad.has(lower)) {
+    return "";
+  }
+  if (/^d:\\|^c:\\|\/|\.(pdf|docx?|pptx?)$/i.test(stripped) && stripped.length > 35) {
+    return "";
+  }
+  return stripped;
 }
 
 function cleanExtractedText(text) {
