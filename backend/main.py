@@ -41,6 +41,11 @@ def config() -> dict:
         or answer_model
         or "gemini-3.1-flash-lite-preview"
     )
+    scene_model = (
+        os.getenv("STORYBUDDY_SCENE_MODEL", "").strip()
+        or character_model
+        or "gemini-3.1-flash-lite-preview"
+    )
     return {
         "hasReplicateToken": has_replicate_token,
         "replicateBaseUrl": replicate_base_url,
@@ -48,6 +53,7 @@ def config() -> dict:
         "hasGeminiApiKey": has_gemini_key,
         "answerModel": answer_model,
         "characterModel": character_model,
+        "sceneModel": scene_model,
         "answerConfigured": has_gemini_key,
     }
 

@@ -32,6 +32,8 @@ class CharacterStyleMap(BaseModel):
 
 class SceneStyleMap(BaseModel):
     scene: str
+    description: str = ""
+    characters: List[str] = Field(default_factory=list)
     ref_ids: List[str] = Field(default_factory=list)
     confidence: float = 0.0
 
@@ -50,12 +52,19 @@ class CharacterProfile(BaseModel):
     visual_vibe: str = ""
 
 
+class SceneProfile(BaseModel):
+    name: str
+    description: str = ""
+    characters: List[str] = Field(default_factory=list)
+
+
 class StoryPackage(BaseModel):
     id: str
     title: str
     raw_text: str
     facts: List[str] = Field(default_factory=list)
     scenes: List[str] = Field(default_factory=list)
+    scene_profiles: List[SceneProfile] = Field(default_factory=list)
     characters: List[str] = Field(default_factory=list)
     character_profiles: List[CharacterProfile] = Field(default_factory=list)
     objects: List[str] = Field(default_factory=list)
@@ -74,6 +83,7 @@ class SetupIngestRequest(BaseModel):
     pdf_base64: Optional[str] = Field(default=None, alias="pdfBase64")
     style_refs: List[StyleRef] = Field(default_factory=list, alias="styleRefs")
     character_image_hints: Dict[str, List[str]] = Field(default_factory=dict, alias="characterImageHints")
+    scene_image_hints: Dict[str, List[str]] = Field(default_factory=dict, alias="sceneImageHints")
 
     class Config:
         populate_by_name = True

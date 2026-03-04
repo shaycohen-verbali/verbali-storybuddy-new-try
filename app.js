@@ -4,7 +4,9 @@ const state = {
   activeSetupPackage: null,
   styleRefs: [],
   characterImageHints: {},
+  sceneImageHints: {},
   detectedCharacters: [],
+  detectedScenes: [],
   latestDebugBundle: null,
   runtimeConfig: null,
   askTimer: {
@@ -35,6 +37,8 @@ const el = {
   clearRefsBtn: document.getElementById("clearRefsBtn"),
   characterMapList: document.getElementById("characterMapList"),
   autoMapCharactersBtn: document.getElementById("autoMapCharactersBtn"),
+  sceneMapList: document.getElementById("sceneMapList"),
+  autoMapScenesBtn: document.getElementById("autoMapScenesBtn"),
   learnBtn: document.getElementById("learnBtn"),
   savePackageBtn: document.getElementById("savePackageBtn"),
   resetSetupBtn: document.getElementById("resetSetupBtn"),
@@ -124,10 +128,14 @@ function wireSetup() {
     el.storyTitle.value = result.package.title || el.storyTitle.value;
     state.styleRefs = (result.package.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `saved-${idx}`));
     state.detectedCharacters = getPackageCharacterProfiles(result.package).map((row) => row.name);
+    state.detectedScenes = getPackageSceneProfiles(result.package).map((row) => row.name);
     loadCharacterHintsFromPackage(result.package);
+    loadSceneHintsFromPackage(result.package);
     ensureCharacterMappingCoverage();
+    ensureSceneMappingCoverage();
     renderStyleRefEditor();
     renderCharacterMapEditor();
+    renderSceneMapEditor();
     upsertCachedPackage(result.package);
 
     const mappedCharacters = (result.package.character_style_map || []).filter((m) => (m.ref_ids || []).length).length;
@@ -170,6 +178,7 @@ function wireSetup() {
       pdfBase64,
       styleRefs: payloadStyleRefs,
       characterImageHints: buildCharacterImageHints(el.bookText.value, styleRefs),
+      sceneImageHints: buildSceneImageHints(el.bookText.value, styleRefs),
     };
   };
 
@@ -213,10 +222,13 @@ function wireSetup() {
         el.storyTitle.value = file.name.replace(/\.(txt|md|json)$/i, "");
       }
       state.detectedCharacters = extractCharacterHintsFromText(el.bookText.value || "");
+      state.detectedScenes = extractSceneHintsFromText(el.bookText.value || "");
       removeBookPageRefs();
       ensureCharacterMappingCoverage();
+      ensureSceneMappingCoverage();
       renderStyleRefEditor();
       renderCharacterMapEditor();
+      renderSceneMapEditor();
       setSetupNote("Loaded text file content. Running AI character extraction...");
       try {
         await runSetupPreview();
@@ -239,14 +251,17 @@ function wireSetup() {
         );
         state.styleRefs = dedupeStyleRefs([...state.styleRefs, ...extractedRefs]);
         ensureCharacterMappingCoverage();
+        ensureSceneMappingCoverage();
         renderStyleRefEditor();
         renderCharacterMapEditor();
+        renderSceneMapEditor();
         if (extraction.title && extraction.title.trim()) {
           el.storyTitle.value = extraction.title.trim();
         }
         if (extraction.text && extraction.text.length >= 40) {
           el.bookText.value = extraction.text;
           state.detectedCharacters = extractCharacterHintsFromText(el.bookText.value || "");
+          state.detectedScenes = extractSceneHintsFromText(el.bookText.value || "");
           setSetupNote(
             `Extracted text from PDF (${extraction.method}, ${extraction.pageCount} page${
               extraction.pageCount === 1 ? "" : "s"
@@ -286,8 +301,10 @@ function wireSetup() {
     );
     state.styleRefs = dedupeStyleRefs([...state.styleRefs, ...loaded.map((ref, idx) => normalizeStyleRef(ref, `manual-${Date.now()}-${idx}`))]);
     ensureCharacterMappingCoverage();
+    ensureSceneMappingCoverage();
     renderStyleRefEditor();
     renderCharacterMapEditor();
+    renderSceneMapEditor();
     el.styleRefs.value = "";
 
     setSetupNote(`Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}. Total reference images: ${state.styleRefs.length}.`);
@@ -296,8 +313,10 @@ function wireSetup() {
   el.clearRefsBtn.addEventListener("click", () => {
     state.styleRefs = [];
     state.characterImageHints = {};
+    state.sceneImageHints = {};
     renderStyleRefEditor();
     renderCharacterMapEditor();
+    renderSceneMapEditor();
     setSetupNote("Cleared all reference images.");
   });
 
@@ -308,10 +327,20 @@ function wireSetup() {
     setSetupNote("Auto-mapped characters to reference images.");
   });
 
+  el.autoMapScenesBtn?.addEventListener("click", () => {
+    state.sceneImageHints = buildAutoSceneImageHints(el.bookText.value, state.styleRefs, deriveSceneList());
+    ensureSceneMappingCoverage();
+    renderSceneMapEditor();
+    setSetupNote("Auto-mapped scenes to reference images.");
+  });
+
   el.bookText.addEventListener("input", () => {
     state.detectedCharacters = extractCharacterHintsFromText(el.bookText.value || "");
+    state.detectedScenes = extractSceneHintsFromText(el.bookText.value || "");
     ensureCharacterMappingCoverage();
+    ensureSceneMappingCoverage();
     renderCharacterMapEditor();
+    renderSceneMapEditor();
   });
 
   el.learnBtn.addEventListener("click", async () => {
@@ -368,6 +397,7 @@ function wireSetup() {
 
   renderStyleRefEditor();
   renderCharacterMapEditor();
+  renderSceneMapEditor();
 }
 
 function wireAsk() {
@@ -611,13 +641,17 @@ function loadPackageToSetup(packageId) {
   state.activeSetupPackage = pkg;
   state.styleRefs = (pkg.style_refs || []).map((ref, idx) => normalizeStyleRef(ref, `pkg-${idx}`));
   state.detectedCharacters = getPackageCharacterProfiles(pkg).map((row) => row.name);
+  state.detectedScenes = getPackageSceneProfiles(pkg).map((row) => row.name);
   loadCharacterHintsFromPackage(pkg);
+  loadSceneHintsFromPackage(pkg);
   ensureCharacterMappingCoverage();
+  ensureSceneMappingCoverage();
   el.storyTitle.value = pkg.title || "";
   el.bookText.value = pkg.raw_text || "";
   el.bookFile.value = "";
   renderStyleRefEditor();
   renderCharacterMapEditor();
+  renderSceneMapEditor();
   setSetupNote(
     `Loaded ${pkg.title}. Character-image mappings: ${(pkg.character_style_map || []).filter((m) => (m.ref_ids || []).length).length}, Scene mappings: ${(pkg.scene_style_map || []).filter((m) => (m.ref_ids || []).length).length}`
   );
@@ -755,6 +789,43 @@ function findCharacterProfile(pkg, name) {
   return getPackageCharacterProfiles(pkg).find((row) => row.name.toLowerCase() === target) || null;
 }
 
+function getPackageSceneProfiles(pkg) {
+  if (!pkg) {
+    return [];
+  }
+  const rawProfiles = Array.isArray(pkg.scene_profiles)
+    ? pkg.scene_profiles
+    : Array.isArray(pkg.sceneProfiles)
+    ? pkg.sceneProfiles
+    : [];
+  const profiles = rawProfiles
+    .map((row) => ({
+      name: String(row?.name || "").trim(),
+      description: String(row?.description || "").trim(),
+      characters: toHintList(row?.characters || []),
+    }))
+    .filter((row) => row.name);
+  if (profiles.length) {
+    return profiles;
+  }
+  const names = Array.isArray(pkg.scenes) ? pkg.scenes : [];
+  return names
+    .map((name) => ({
+      name: String(name || "").trim(),
+      description: "",
+      characters: [],
+    }))
+    .filter((row) => row.name);
+}
+
+function findSceneProfile(pkg, name) {
+  const target = String(name || "").trim().toLowerCase();
+  if (!target) {
+    return null;
+  }
+  return getPackageSceneProfiles(pkg).find((row) => row.name.toLowerCase() === target) || null;
+}
+
 function selectedAskPackage() {
   const packageId = el.packageSelect?.value || "";
   if (!packageId) {
@@ -867,13 +938,16 @@ function resetSetup() {
   state.activeSetupPackage = null;
   state.styleRefs = [];
   state.characterImageHints = {};
+  state.sceneImageHints = {};
   state.detectedCharacters = [];
+  state.detectedScenes = [];
   el.storyTitle.value = "";
   el.bookText.value = "";
   el.bookFile.value = "";
   el.styleRefs.value = "";
   renderStyleRefEditor();
   renderCharacterMapEditor();
+  renderSceneMapEditor();
 }
 
 function activateTab(name) {
@@ -921,6 +995,24 @@ function buildCharacterImageHints(text, styleRefs) {
   return hintMap;
 }
 
+function buildSceneImageHints(text, styleRefs) {
+  const scenes = deriveSceneList();
+  const auto = buildAutoSceneImageHints(text, styleRefs, scenes);
+  const hintMap = {};
+
+  scenes.forEach((scene) => {
+    const manual = toHintList(state.sceneImageHints[scene] || []).filter((id) =>
+      styleRefs.some((ref) => ref.id === id)
+    );
+    const chosen = manual.length ? manual : toHintList(auto[scene] || []);
+    if (chosen.length) {
+      hintMap[scene] = chosen.slice(0, 2);
+    }
+  });
+
+  return hintMap;
+}
+
 function deriveCharacterList() {
   const pkg = currentEditingPackage();
   const packageCharacters = getPackageCharacterProfiles(pkg).map((row) => row.name);
@@ -929,6 +1021,17 @@ function deriveCharacterList() {
   const textCharacters = extractCharacterHintsFromText(el.bookText.value || "");
   const preferred = explicitDetected.length ? explicitDetected : packageCharacters;
   const merged = preferred.length ? [...preferred, ...hintKeys] : [...hintKeys, ...textCharacters];
+  return dedupeStrings(merged.map((name) => String(name || "").trim()).filter(Boolean)).slice(0, 30);
+}
+
+function deriveSceneList() {
+  const pkg = currentEditingPackage();
+  const packageScenes = getPackageSceneProfiles(pkg).map((row) => row.name);
+  const explicitDetected = Array.isArray(state.detectedScenes) ? state.detectedScenes : [];
+  const hintKeys = Object.keys(state.sceneImageHints || {});
+  const textScenes = extractSceneHintsFromText(el.bookText.value || "");
+  const preferred = explicitDetected.length ? explicitDetected : packageScenes;
+  const merged = preferred.length ? [...preferred, ...hintKeys] : [...hintKeys, ...textScenes];
   return dedupeStrings(merged.map((name) => String(name || "").trim()).filter(Boolean)).slice(0, 30);
 }
 
@@ -976,6 +1079,53 @@ function buildAutoCharacterImageHints(text, styleRefs, characters) {
   return hints;
 }
 
+function buildAutoSceneImageHints(text, styleRefs, scenes) {
+  const hints = {};
+  const selectedScenes = Array.isArray(scenes) && scenes.length ? scenes : extractSceneHintsFromText(text);
+
+  styleRefs.forEach((ref) => {
+    toHintList(ref.sceneHints).forEach((scene) => {
+      if (!selectedScenes.includes(scene)) {
+        return;
+      }
+      if (!hints[scene]) {
+        hints[scene] = [];
+      }
+      if (!hints[scene].includes(ref.id)) {
+        hints[scene].push(ref.id);
+      }
+    });
+  });
+
+  selectedScenes.forEach((scene) => {
+    const tokens = scene
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((tok) => tok.length >= 3);
+    const ids = styleRefs
+      .filter((ref) => {
+        const blob = `${ref.name} ${(ref.pageTextSnippet || "").slice(0, 260)} ${(ref.sceneHints || []).join(" ")}`.toLowerCase();
+        return tokens.some((tok) => blob.includes(tok));
+      })
+      .map((ref) => ref.id)
+      .slice(0, 2);
+    if (ids.length) {
+      hints[scene] = dedupeStrings([...(hints[scene] || []), ...ids]).slice(0, 2);
+    }
+  });
+
+  const firstRefId = styleRefs[0]?.id;
+  if (firstRefId) {
+    selectedScenes.forEach((scene) => {
+      if (!(hints[scene] || []).length) {
+        hints[scene] = [firstRefId];
+      }
+    });
+  }
+
+  return hints;
+}
+
 function loadCharacterHintsFromPackage(pkg) {
   const next = {};
   (pkg?.character_style_map || []).forEach((row) => {
@@ -989,6 +1139,21 @@ function loadCharacterHintsFromPackage(pkg) {
     }
   });
   state.characterImageHints = next;
+}
+
+function loadSceneHintsFromPackage(pkg) {
+  const next = {};
+  (pkg?.scene_style_map || []).forEach((row) => {
+    const scene = String(row.scene || "").trim();
+    if (!scene) {
+      return;
+    }
+    const ids = toHintList(row.ref_ids || []).filter((id) => state.styleRefs.some((ref) => ref.id === id));
+    if (ids.length) {
+      next[scene] = ids.slice(0, 2);
+    }
+  });
+  state.sceneImageHints = next;
 }
 
 function ensureCharacterMappingCoverage() {
@@ -1006,6 +1171,23 @@ function ensureCharacterMappingCoverage() {
   });
 
   state.characterImageHints = next;
+}
+
+function ensureSceneMappingCoverage() {
+  const scenes = deriveSceneList();
+  const auto = buildAutoSceneImageHints(el.bookText.value, state.styleRefs, scenes);
+  const validRefIds = new Set(state.styleRefs.map((ref) => ref.id));
+  const next = {};
+
+  scenes.forEach((scene) => {
+    const existing = toHintList(state.sceneImageHints[scene] || []).filter((id) => validRefIds.has(id));
+    const chosen = existing.length ? existing : toHintList(auto[scene] || []);
+    if (chosen.length) {
+      next[scene] = chosen.slice(0, 2);
+    }
+  });
+
+  state.sceneImageHints = next;
 }
 
 function normalizeStyleRef(raw, fallbackId) {
@@ -1098,7 +1280,9 @@ function renderStyleRefEditor() {
     nameInput.addEventListener("input", () => {
       ref.name = nameInput.value.trim() || ref.id;
       ensureCharacterMappingCoverage();
+      ensureSceneMappingCoverage();
       renderCharacterMapEditor();
+      renderSceneMapEditor();
     });
     fields.appendChild(wrapRefField("Name", nameInput));
 
@@ -1117,6 +1301,8 @@ function renderStyleRefEditor() {
     scenesInput.placeholder = "Scene hints (comma separated)";
     scenesInput.addEventListener("input", () => {
       ref.sceneHints = toHintList(scenesInput.value);
+      ensureSceneMappingCoverage();
+      renderSceneMapEditor();
     });
     fields.appendChild(wrapRefField("Scene hints", scenesInput));
 
@@ -1127,8 +1313,10 @@ function renderStyleRefEditor() {
     removeBtn.addEventListener("click", () => {
       state.styleRefs = state.styleRefs.filter((entry) => entry.id !== ref.id);
       ensureCharacterMappingCoverage();
+      ensureSceneMappingCoverage();
       renderStyleRefEditor();
       renderCharacterMapEditor();
+      renderSceneMapEditor();
     });
     fields.appendChild(removeBtn);
 
@@ -1296,6 +1484,157 @@ function renderCharacterMapEditor() {
   });
 }
 
+function renderSceneMapEditor() {
+  if (!el.sceneMapList) {
+    return;
+  }
+
+  el.sceneMapList.innerHTML = "";
+  const scenes = deriveSceneList();
+  if (!scenes.length) {
+    const empty = document.createElement("p");
+    empty.className = "inline-note";
+    empty.textContent = "No scenes detected yet. Add book text or save the package first.";
+    el.sceneMapList.appendChild(empty);
+    return;
+  }
+
+  if (!state.styleRefs.length) {
+    const note = document.createElement("p");
+    note.className = "inline-note";
+    note.textContent = "No reference images yet. Add an image per scene below or upload global references above.";
+    el.sceneMapList.appendChild(note);
+  }
+
+  ensureSceneMappingCoverage();
+
+  const pkg = currentEditingPackage();
+  const mapRows = Array.isArray(pkg?.scene_style_map) ? pkg.scene_style_map : [];
+  const mapLookup = new Map(mapRows.map((row) => [String(row.scene || ""), row]));
+
+  scenes.forEach((scene) => {
+    const mappedIds = toHintList(state.sceneImageHints[scene] || []);
+    const selectedRefId = mappedIds[0] || "";
+    const selectedRef = state.styleRefs.find((ref) => ref.id === selectedRefId) || null;
+    const profile = findSceneProfile(pkg, scene);
+    const mapRow = mapLookup.get(scene) || null;
+    const description =
+      String(mapRow?.description || profile?.description || "").trim() ||
+      "No scene description yet. Save setup to generate AI scene descriptions.";
+    const sceneCharacters = toHintList(mapRow?.characters || profile?.characters || []);
+
+    const card = document.createElement("article");
+    card.className = "sceneMapItem";
+
+    const previewWrap = document.createElement("div");
+    previewWrap.className = "sceneMapItem__previewWrap";
+    const preview = document.createElement("img");
+    preview.className = "sceneMapItem__preview";
+    preview.alt = selectedRef ? `${scene} mapped reference` : `${scene} no mapped reference`;
+    preview.src =
+      selectedRef?.dataUrl ||
+      "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='180'%3E%3Crect width='100%25' height='100%25' fill='%23f3efe2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%237a7567' font-size='14' font-family='Arial'%3ENo image%3C/text%3E%3C/svg%3E";
+    previewWrap.appendChild(preview);
+
+    const fields = document.createElement("div");
+    fields.className = "sceneMapItem__fields";
+
+    const title = document.createElement("h4");
+    title.className = "sceneMapItem__title";
+    title.textContent = scene;
+    fields.appendChild(title);
+
+    const desc = document.createElement("p");
+    desc.className = "sceneMapItem__meta";
+    desc.textContent = description;
+    fields.appendChild(desc);
+
+    const charRow = document.createElement("p");
+    charRow.className = "sceneMapItem__meta";
+    charRow.textContent = sceneCharacters.length
+      ? `Characters: ${sceneCharacters.slice(0, 6).join(", ")}`
+      : "Characters: none detected";
+    fields.appendChild(charRow);
+
+    const status = document.createElement("p");
+    status.className = "sceneMapItem__meta";
+    status.textContent = selectedRef ? `Mapped to: ${selectedRef.name}` : "Not mapped";
+    fields.appendChild(status);
+
+    const select = document.createElement("select");
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "Select image reference";
+    select.appendChild(blank);
+
+    state.styleRefs.forEach((ref) => {
+      const option = document.createElement("option");
+      option.value = ref.id;
+      option.textContent = `${ref.name}${ref.pageNumber ? ` (page ${ref.pageNumber})` : ""}`;
+      if (ref.id === selectedRefId) {
+        option.selected = true;
+      }
+      select.appendChild(option);
+    });
+
+    select.addEventListener("change", () => {
+      const value = select.value.trim();
+      if (!value) {
+        delete state.sceneImageHints[scene];
+      } else {
+        state.sceneImageHints[scene] = [value];
+      }
+      ensureSceneMappingCoverage();
+      renderSceneMapEditor();
+    });
+    fields.appendChild(wrapRefField("Reference image", select));
+
+    const uploadInput = document.createElement("input");
+    uploadInput.type = "file";
+    uploadInput.accept = "image/*";
+    uploadInput.addEventListener("change", async () => {
+      const file = uploadInput.files?.[0];
+      if (!file) {
+        return;
+      }
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        const refId = `scene-ref-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        const newRef = normalizeStyleRef(
+          {
+            id: refId,
+            name: `${scene} - ${file.name}`,
+            dataUrl,
+            characterHints: sceneCharacters.slice(0, 3),
+            sceneHints: [scene],
+            sourceType: "manual_scene",
+            pageNumber: null,
+            pageTextSnippet: "",
+          },
+          refId
+        );
+        state.styleRefs = dedupeStyleRefs([...state.styleRefs, newRef]);
+        state.sceneImageHints[scene] = [newRef.id];
+        ensureCharacterMappingCoverage();
+        ensureSceneMappingCoverage();
+        renderStyleRefEditor();
+        renderCharacterMapEditor();
+        renderSceneMapEditor();
+        setSetupNote(`Added image for scene "${scene}".`);
+      } catch (err) {
+        setSetupNote(`Failed to add image for scene "${scene}": ${readError(err)}`);
+      } finally {
+        uploadInput.value = "";
+      }
+    });
+    fields.appendChild(wrapRefField(`Add image for ${scene}`, uploadInput));
+
+    card.appendChild(previewWrap);
+    card.appendChild(fields);
+    el.sceneMapList.appendChild(card);
+  });
+}
+
 function wrapRefField(label, inputEl) {
   const wrapper = document.createElement("label");
   wrapper.className = "field";
@@ -1333,7 +1672,7 @@ function extractSceneHintsFromText(text) {
   let match;
   while ((match = regex.exec(source))) {
     scenes.push(`${match[1]} ${match[2].trim()}`.replace(/\s+/g, " "));
-    if (scenes.length >= 3) {
+    if (scenes.length >= 12) {
       break;
     }
   }

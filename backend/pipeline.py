@@ -16,6 +16,7 @@ from typing import Dict, List, Tuple
 from .answer_adapter import generate_answer_options_with_gemini
 from .character_adapter import extract_character_profiles_with_gemini
 from .image_adapter import canonicalize_model, generate_image
+from .scene_adapter import extract_scene_profiles_with_gemini
 from .models import (
     AnswerCard,
     AnswerOption,
@@ -23,6 +24,7 @@ from .models import (
     CardDebug,
     CharacterProfile,
     CharacterStyleMap,
+    SceneProfile,
     SceneStyleMap,
     SetupIngestRequest,
     SetupIngestResponse,
@@ -113,6 +115,16 @@ def ingest_setup(
     )
     if character_profiles:
         learned["characters"] = [str(row.get("name", "")) for row in character_profiles if str(row.get("name", "")).strip()]
+    scene_profiles = build_scene_profiles(
+        story_title=req.story_title.strip(),
+        raw_text=text,
+        facts=learned["facts"],
+        characters=learned["characters"],
+        heuristic_scenes=learned["scenes"],
+        pdf_base64=req.pdf_base64 or "",
+    )
+    if scene_profiles:
+        learned["scenes"] = [str(row.get("name", "")) for row in scene_profiles if str(row.get("name", "")).strip()]
     style_refs = normalize_style_refs(req.style_refs or (existing.style_refs if existing else []))
     style_profile = build_style_profile(style_refs, text)
     character_map = build_character_style_map(
@@ -137,6 +149,12 @@ def ingest_setup(
     scene_map = build_scene_style_map(
         scenes=learned["scenes"],
         style_refs=style_refs,
+        explicit_hints=req.scene_image_hints,
+        descriptions={str(row.get("name", "")): str(row.get("description", "")) for row in scene_profiles},
+        characters_by_scene={
+            str(row.get("name", "")): [str(item) for item in (row.get("characters", []) or [])]
+            for row in scene_profiles
+        },
     )
 
     now = _utc_now()
@@ -147,6 +165,15 @@ def ingest_setup(
         raw_text=text,
         facts=learned["facts"],
         scenes=learned["scenes"],
+        scene_profiles=[
+            SceneProfile(
+                name=str(row.get("name", "")),
+                description=str(row.get("description", "")),
+                characters=[str(item) for item in (row.get("characters", []) or [])],
+            )
+            for row in scene_profiles
+            if str(row.get("name", "")).strip()
+        ],
         characters=learned["characters"],
         character_profiles=[
             CharacterProfile(
@@ -237,6 +264,71 @@ def build_fallback_character_profiles(characters: List[str], facts: List[str]) -
                 "visualVibe": "Friendly storybook character",
             }
         )
+    return out
+
+
+def build_scene_profiles(
+    *,
+    story_title: str,
+    raw_text: str,
+    facts: List[str],
+    characters: List[str],
+    heuristic_scenes: List[str],
+    pdf_base64: str = "",
+) -> List[Dict[str, object]]:
+    try:
+        rows = extract_scene_profiles_with_gemini(
+            story_title=story_title,
+            raw_text=raw_text,
+            facts=facts,
+            characters=characters,
+            heuristic_scenes=heuristic_scenes,
+            pdf_base64=pdf_base64,
+        )
+        logger.info("scene extraction provider=gemini count=%s", len(rows))
+        return rows
+    except Exception as exc:
+        allow_fallback = os.getenv("STORYBUDDY_ALLOW_SCENE_FALLBACK", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if allow_fallback:
+            logger.warning("scene extraction with gemini failed, using fallback: %s", exc)
+            return build_fallback_scene_profiles(heuristic_scenes, facts, characters)
+        raise ValueError(f"AI scene extraction failed: {exc}") from exc
+
+
+def build_fallback_scene_profiles(scenes: List[str], facts: List[str], characters: List[str]) -> List[Dict[str, object]]:
+    out: List[Dict[str, object]] = []
+    seen = set()
+    for scene in scenes[:12]:
+        name = str(scene or "").strip()
+        if not name:
+            continue
+        key = normalize(name)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        scene_tokens = set(tokenize(name))
+        matching_facts = []
+        for fact in facts[:50]:
+            fact_tokens = set(tokenize(fact))
+            if scene_tokens and (scene_tokens & fact_tokens):
+                matching_facts.append(fact)
+
+        description_fact = matching_facts[0] if matching_facts else ""
+        description = truncate(strip_page_markers(description_fact), 140) if description_fact else "Important story scene."
+
+        scene_characters: List[str] = []
+        for fact in matching_facts[:5]:
+            for character in characters[:20]:
+                if re.search(rf"\b{re.escape(character)}\b", fact, flags=re.I):
+                    if character not in scene_characters:
+                        scene_characters.append(character)
+        out.append({"name": name, "description": description, "characters": scene_characters[:6]})
     return out
 
 
@@ -375,16 +467,28 @@ def _score_ref_for_character(
     return score
 
 
-def _score_ref_for_scene(ref: StyleRef, scene: str) -> int:
+def _score_ref_for_scene(
+    ref: StyleRef,
+    scene: str,
+    *,
+    description: str = "",
+    characters: List[str] | None = None,
+) -> int:
     score = 0
     target = normalize(scene)
     tokens = [tok for tok in tokenize(scene) if tok not in {"inside", "outside", "near"}]
+    desc_tokens = tokenize(description)
+    char_tokens: List[str] = []
+    for name in characters or []:
+        char_tokens.extend(tokenize_name(name))
     blob = _ref_text_blob(ref)
 
     if any(target == normalize(hint) for hint in ref.scene_hints):
         score += 8
     if target in normalize(blob):
         score += 4
+    score += sum(1 for tok in desc_tokens if tok in blob)
+    score += sum(1 for tok in char_tokens if tok in blob)
     score += sum(2 for tok in tokens if tok in ref.name.lower())
     score += sum(1 for tok in tokens if tok in blob)
     return score
@@ -483,12 +587,47 @@ def build_scene_style_map(
     *,
     scenes: List[str],
     style_refs: List[StyleRef],
+    explicit_hints: Dict[str, List[str]] | None = None,
+    descriptions: Dict[str, str] | None = None,
+    characters_by_scene: Dict[str, List[str]] | None = None,
 ) -> List[SceneStyleMap]:
+    explicit_hints = explicit_hints or {}
+    descriptions = descriptions or {}
+    characters_by_scene = characters_by_scene or {}
+    ref_lookup = {r.id: r for r in style_refs}
     rows: List[SceneStyleMap] = []
     for scene in scenes:
+        description = descriptions.get(scene, "")
+        scene_characters = characters_by_scene.get(scene, [])
         matched_ids: List[str] = []
+        if scene in explicit_hints:
+            for ref_id in explicit_hints[scene]:
+                if ref_id in ref_lookup and ref_id not in matched_ids:
+                    matched_ids.append(ref_id)
+            if matched_ids:
+                rows.append(
+                    SceneStyleMap(
+                        scene=scene,
+                        description=description,
+                        characters=scene_characters[:8],
+                        ref_ids=matched_ids[:2],
+                        confidence=0.95,
+                    )
+                )
+                continue
         scored = sorted(
-            ((_score_ref_for_scene(ref, scene), ref.id) for ref in style_refs),
+            (
+                (
+                    _score_ref_for_scene(
+                        ref,
+                        scene,
+                        description=description,
+                        characters=scene_characters,
+                    ),
+                    ref.id,
+                )
+                for ref in style_refs
+            ),
             reverse=True,
         )
         for score, ref_id in scored:
@@ -508,7 +647,15 @@ def build_scene_style_map(
             if top_score >= 8:
                 confidence = 0.9
 
-        rows.append(SceneStyleMap(scene=scene, ref_ids=matched_ids[:2], confidence=confidence))
+        rows.append(
+            SceneStyleMap(
+                scene=scene,
+                description=description,
+                characters=scene_characters[:8],
+                ref_ids=matched_ids[:2],
+                confidence=confidence,
+            )
+        )
     return rows
 
 
@@ -1098,10 +1245,18 @@ def build_illustration_prompt(
     palette = ", ".join(package.style_profile.dominant_palette[:3]) or "book palette"
     scene = str(participants.get("scene", "main story setting"))
     chars = ", ".join(participants.get("characters", []) or []) or "main cast"
+    scene_row = next((m for m in package.scene_style_map if normalize(m.scene) == normalize(scene)), None)
+    scene_description = ""
+    scene_characters = ""
+    if scene_row:
+        scene_description = str(scene_row.description or "").strip()
+        scene_characters = ", ".join(scene_row.characters or [])
 
     return (
         "Illustrate a child-friendly answer card in the exact style of the provided reference images. "
         f"Answer concept: {option.text}. Scene: {scene}. Characters: {chars}. "
+        f"{f'Scene description: {scene_description}. ' if scene_description else ''}"
+        f"{f'Scene cast: {scene_characters}. ' if scene_characters else ''}"
         f"Book style cues: {style_notes}. Palette: {palette}. "
         f"Reference images: {refs}. "
         "Keep character appearance and scene look consistent with the book. "
