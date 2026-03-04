@@ -48,6 +48,7 @@ const el = {
   generateBtn: document.getElementById("generateBtn"),
   clearRunBtn: document.getElementById("clearRunBtn"),
   askElapsed: document.getElementById("askElapsed"),
+  questionCharacterMatches: document.getElementById("questionCharacterMatches"),
   timingsView: document.getElementById("timingsView"),
   timelineView: document.getElementById("timelineView"),
   cards: document.getElementById("cards"),
@@ -626,6 +627,9 @@ function clearRun() {
   el.timingsView.textContent = "No run yet.";
   el.timelineView.textContent = "No run yet.";
   el.debugView.textContent = "No run yet.";
+  if (el.questionCharacterMatches) {
+    el.questionCharacterMatches.textContent = "Question character matches: none";
+  }
   el.cards.innerHTML = "";
   state.latestDebugBundle = null;
   setAskElapsed(0);
@@ -677,6 +681,12 @@ async function renderAskResult(result) {
     .join("\n");
 
   el.cards.innerHTML = "";
+  const matchedCharacters = result?.debugBundle?.request?.questionCharacterMatches || [];
+  if (el.questionCharacterMatches) {
+    el.questionCharacterMatches.textContent = Array.isArray(matchedCharacters) && matchedCharacters.length
+      ? `Question character matches: ${matchedCharacters.join(", ")}`
+      : "Question character matches: none";
+  }
   const imageLoadPromises = [];
   (result.cards || []).forEach((card) => {
     const node = el.cardTemplate.content.firstElementChild.cloneNode(true);

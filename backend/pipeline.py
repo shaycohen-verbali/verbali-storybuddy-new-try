@@ -91,7 +91,12 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def ingest_setup(req: SetupIngestRequest, existing: StoryPackage | None = None) -> SetupIngestResponse:
+def ingest_setup(
+    req: SetupIngestRequest,
+    existing: StoryPackage | None = None,
+    *,
+    enforce_character_mapping: bool = True,
+) -> SetupIngestResponse:
     text = (req.book_text or "").strip()
     if not text and req.pdf_base64:
         text = extract_text_from_pdf_base64(req.pdf_base64)
@@ -122,6 +127,13 @@ def ingest_setup(req: SetupIngestRequest, existing: StoryPackage | None = None) 
         },
         vibe_by_name={str(row.get("name", "")): str(row.get("visualVibe", "")) for row in character_profiles},
     )
+    if enforce_character_mapping:
+        missing = [row.character for row in character_map if not row.ref_ids]
+        if missing:
+            raise ValueError(
+                "Each identified character must be mapped to at least one reference image. "
+                f"Missing mappings: {', '.join(missing[:10])}"
+            )
     scene_map = build_scene_style_map(
         scenes=learned["scenes"],
         style_refs=style_refs,
@@ -247,7 +259,7 @@ def extract_text_from_pdf_base64(pdf_b64: str) -> str:
 
 def analyze_book_text(text: str) -> Dict[str, List[str]]:
     cleaned = clean_text(strip_page_markers(text))
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
+    sentences = split_story_sentences(cleaned)
 
     facts = [truncate(strip_page_markers(s), 200) for s in sentences[:40]]
     characters = extract_characters(cleaned)[:12]
@@ -260,6 +272,16 @@ def analyze_book_text(text: str) -> Dict[str, List[str]]:
         "objects": objects,
         "scenes": scenes,
     }
+
+
+def split_story_sentences(text: str) -> List[str]:
+    # Preserve sentence integrity for honorifics like "Mrs. Bloom".
+    protected = str(text or "")
+    for abbr in ["Mr.", "Mrs.", "Ms.", "Dr.", "Prof.", "St.", "Sr.", "Jr."]:
+        protected = re.sub(rf"\b{re.escape(abbr)}", abbr.replace(".", "<prd>"), protected, flags=re.I)
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", protected) if part.strip()]
+    out = [part.replace("<prd>", ".") for part in parts]
+    return out
 
 
 def build_style_profile(style_refs: List[StyleRef], text: str) -> StyleProfile:
@@ -513,6 +535,7 @@ async def run_ask_pipeline(package: StoryPackage, question: str, model: str) -> 
     t = begin("transcription", "main")
     transcript = question.strip()
     end(t)
+    question_character_matches = resolve_question_characters(package, transcript)
 
     t = begin("answer_option_generation", "main")
     options, answer_generation = await generate_answer_options(package, transcript)
@@ -531,6 +554,7 @@ async def run_ask_pipeline(package: StoryPackage, question: str, model: str) -> 
             lane=f"card-{idx}",
             t0=t0,
             timeline=timeline,
+            question_characters=question_character_matches,
         )
         for idx, option in enumerate(options, start=1)
     ]
@@ -553,6 +577,7 @@ async def run_ask_pipeline(package: StoryPackage, question: str, model: str) -> 
             "storyTitle": package.title,
             "model": resolved_model,
             "transcript": transcript,
+            "questionCharacterMatches": question_character_matches,
         },
         "answerGeneration": answer_generation,
         "options": [
@@ -595,6 +620,7 @@ async def _generate_card(
     lane: str,
     t0: float,
     timeline: List[Dict[str, object]],
+    question_characters: List[str],
 ) -> AnswerCard:
     def begin(event: str, meta: Dict[str, object] | None = None) -> Dict[str, object]:
         item = {
@@ -613,7 +639,17 @@ async def _generate_card(
         item["durationMs"] = int(item["endMs"]) - int(item["startMs"])
 
     e = begin("participant_resolver")
-    participants = resolve_participants(package, option.text, option.support_fact)
+    participants = resolve_participants(package, question, option.text, option.support_fact)
+    warnings: List[str] = []
+    selected_chars = [str(name) for name in participants.get("characters", [])]
+    if question_characters and not set(normalize(name) for name in question_characters).intersection(
+        normalize(name) for name in selected_chars
+    ):
+        warnings.append(
+            f"Question mentions {', '.join(question_characters)} but selected participants were {', '.join(selected_chars) or 'none'}."
+        )
+    if warnings:
+        participants["warnings"] = warnings
     end(e)
 
     e = begin("style_ref_selection")
@@ -790,11 +826,18 @@ def generate_answer_options_rule_based(package: StoryPackage, question: str) -> 
     return options
 
 
-def resolve_participants(package: StoryPackage, option_text: str, support_fact: str) -> Dict[str, object]:
-    text = f"{option_text} {support_fact}".lower()
-    chars = [name for name in package.characters if name.lower() in text][:3]
-    objects = [obj for obj in package.objects if obj.lower() in text][:3]
-    scene = next((scene for scene in package.scenes if scene.lower() in text), package.scenes[0] if package.scenes else "Main story setting")
+def resolve_participants(package: StoryPackage, question: str, option_text: str, support_fact: str) -> Dict[str, object]:
+    alias_index = build_character_alias_index(package)
+    text = f"{question} {option_text} {support_fact}"
+    text_lower = text.lower()
+    chars = match_character_names(text, alias_index)[:3]
+    if not chars:
+        chars = find_characters_from_related_facts(package, support_fact, alias_index)[:3]
+    objects = [obj for obj in package.objects if obj.lower() in text_lower][:3]
+    scene = next(
+        (scene for scene in package.scenes if normalize(scene) in normalize(text)),
+        package.scenes[0] if package.scenes else "Main story setting",
+    )
 
     if not chars and package.characters:
         chars = package.characters[:1]
@@ -804,6 +847,91 @@ def resolve_participants(package: StoryPackage, option_text: str, support_fact: 
         "characters": chars,
         "objects": objects,
     }
+
+
+def resolve_question_characters(package: StoryPackage, question: str) -> List[str]:
+    return match_character_names(question, build_character_alias_index(package))
+
+
+def build_character_alias_index(package: StoryPackage) -> Dict[str, str]:
+    canonical = [name for name in package.characters if name.strip()]
+    if not canonical and package.character_profiles:
+        canonical = [row.name for row in package.character_profiles if row.name.strip()]
+    if not canonical and package.character_style_map:
+        canonical = [row.character for row in package.character_style_map if row.character.strip()]
+    canonical_norm = {normalize(name) for name in canonical}
+    for row in package.character_style_map:
+        if row.character.strip() and normalize(row.character) not in canonical_norm:
+            canonical.append(row.character.strip())
+            canonical_norm.add(normalize(row.character))
+
+    index: Dict[str, str] = {}
+    for name in canonical:
+        aliases = aliases_for_character_name(name)
+        for alias in aliases:
+            if alias and alias not in index:
+                index[alias] = name
+    return index
+
+
+def aliases_for_character_name(name: str) -> List[str]:
+    cleaned = normalize_character_alias(name)
+    if not cleaned:
+        return []
+    parts = cleaned.split()
+    aliases = {cleaned}
+    if len(parts) >= 2:
+        last = parts[-1]
+        aliases.add(last)
+        if parts[0] in {"mr", "mrs", "ms", "miss", "dr"}:
+            base = " ".join(parts[1:])
+            aliases.add(base)
+            aliases.add(f"ms {base}")
+            aliases.add(f"mrs {base}")
+            aliases.add(f"miss {base}")
+    return sorted(aliases, key=len, reverse=True)
+
+
+def normalize_character_alias(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", str(value or "").lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def match_character_names(text: str, alias_index: Dict[str, str]) -> List[str]:
+    source = f" {normalize_character_alias(text)} "
+    matched: List[str] = []
+    seen = set()
+    for alias, canonical in sorted(alias_index.items(), key=lambda item: len(item[0]), reverse=True):
+        if not alias:
+            continue
+        if f" {alias} " in source:
+            key = normalize(canonical)
+            if key not in seen:
+                seen.add(key)
+                matched.append(canonical)
+    return matched
+
+
+def find_characters_from_related_facts(package: StoryPackage, support_fact: str, alias_index: Dict[str, str]) -> List[str]:
+    support_tokens = set(tokenize(support_fact))
+    if not support_tokens:
+        return []
+    out: List[str] = []
+    seen = set()
+    for fact in package.facts[:40]:
+        fact_tokens = set(tokenize(fact))
+        if not fact_tokens:
+            continue
+        overlap = support_tokens & fact_tokens
+        if not overlap:
+            continue
+        for name in match_character_names(fact, alias_index):
+            key = normalize(name)
+            if key not in seen:
+                seen.add(key)
+                out.append(name)
+    return out
 
 
 def generate_special_answer_options(package: StoryPackage, question: str) -> List[AnswerOption] | None:
@@ -927,7 +1055,7 @@ def select_style_refs(package: StoryPackage, participants: Dict[str, object]) ->
         )
 
     for ch in chars:
-        row = next((m for m in package.character_style_map if m.character == ch), None)
+        row = next((m for m in package.character_style_map if normalize(m.character) == normalize(ch)), None)
         if row:
             for rid in row.ref_ids:
                 add_ref(rid, reason="character_map", entity=ch)

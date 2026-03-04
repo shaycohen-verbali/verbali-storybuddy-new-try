@@ -81,7 +81,7 @@ def setup_ingest(req: SetupIngestRequest) -> SetupIngestResponse:
         existing = load_package(req.package_id)
 
     try:
-        result = ingest_setup(req, existing=existing)
+        result = ingest_setup(req, existing=existing, enforce_character_mapping=True)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -96,7 +96,7 @@ def setup_preview(req: SetupIngestRequest) -> SetupIngestResponse:
         existing = load_package(req.package_id)
 
     try:
-        result = ingest_setup(req, existing=existing)
+        result = ingest_setup(req, existing=existing, enforce_character_mapping=False)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
