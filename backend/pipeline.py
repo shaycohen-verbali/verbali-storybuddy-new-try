@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import logging
+import os
 import re
 import time
 import uuid
@@ -12,6 +13,7 @@ from datetime import datetime, timezone
 from random import Random
 from typing import Dict, List, Tuple
 
+from .answer_adapter import generate_answer_options_with_gemini
 from .image_adapter import canonicalize_model, generate_image
 from .models import (
     AnswerCard,
@@ -75,6 +77,12 @@ class CardImageGenerationError(RuntimeError):
         self.model = model
         self.detail = detail
         super().__init__(f"{card_id} image generation failed for model {model}: {detail}")
+
+
+class AnswerGenerationError(RuntimeError):
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__(detail)
 
 
 def _utc_now() -> datetime:
@@ -358,7 +366,8 @@ async def run_ask_pipeline(package: StoryPackage, question: str, model: str) -> 
     end(t)
 
     t = begin("answer_option_generation", "main")
-    options = generate_answer_options(package, transcript)
+    options, answer_generation = await generate_answer_options(package, transcript)
+    t["meta"] = {"provider": answer_generation.get("provider"), "model": answer_generation.get("model")}
     end(t)
 
     resolved_model = canonicalize_model(model)
@@ -396,6 +405,7 @@ async def run_ask_pipeline(package: StoryPackage, question: str, model: str) -> 
             "model": resolved_model,
             "transcript": transcript,
         },
+        "answerGeneration": answer_generation,
         "options": [
             {
                 "text": option.text,
@@ -546,7 +556,51 @@ def summarize_step_timings(timeline: List[Dict[str, object]]) -> Dict[str, int]:
     return out
 
 
-def generate_answer_options(package: StoryPackage, question: str) -> List[AnswerOption]:
+async def generate_answer_options(package: StoryPackage, question: str) -> Tuple[List[AnswerOption], Dict[str, object]]:
+    try:
+        ai = await generate_answer_options_with_gemini(
+            story_title=package.title,
+            question=question,
+            facts=package.facts,
+            characters=package.characters,
+            scenes=package.scenes,
+        )
+        options = [
+            AnswerOption(
+                text=str(item.get("text", "")),
+                isCorrect=bool(item.get("isCorrect")),
+                supportFact=str(item.get("supportFact", "")),
+            )
+            for item in ai.get("options", [])
+        ]
+        if len(options) == 3 and sum(1 for item in options if item.is_correct) == 1:
+            return options, {
+                "provider": ai.get("provider", "gemini"),
+                "model": ai.get("model", "gemini-2.5-flash"),
+                "prompt": ai.get("prompt", ""),
+                "mode": "ai",
+            }
+        raise RuntimeError("invalid option shape from gemini")
+    except Exception as exc:
+        allow_fallback = os.getenv("STORYBUDDY_ALLOW_RULE_BASED_FALLBACK", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if allow_fallback:
+            logger.warning("gemini answer generation failed, using fallback: %s", exc)
+            return generate_answer_options_rule_based(package, question), {
+                "provider": "rule_based_fallback",
+                "model": "none",
+                "prompt": "",
+                "error": str(exc),
+                "mode": "fallback",
+            }
+        raise AnswerGenerationError(f"Gemini answer generation failed: {exc}") from exc
+
+
+def generate_answer_options_rule_based(package: StoryPackage, question: str) -> List[AnswerOption]:
     feeling = generate_feeling_answer_options(package, question)
     if feeling:
         rnd = Random(hash(question) & 0xFFFFFFFF)

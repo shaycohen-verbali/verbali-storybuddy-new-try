@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .models import AskRequest, AskResponse, SetupIngestRequest, SetupIngestResponse, StoryPackage
-from .pipeline import CardImageGenerationError, ingest_setup, run_ask_pipeline
+from .pipeline import AnswerGenerationError, CardImageGenerationError, ingest_setup, run_ask_pipeline
 from .storage import delete_package, list_packages, load_package, save_package
 
 logging.basicConfig(level=os.getenv("STORYBUDDY_LOG_LEVEL", "INFO"))
@@ -33,11 +33,16 @@ def health() -> dict:
 @app.get("/api/config")
 def config() -> dict:
     has_replicate_token = bool(os.getenv("REPLICATE_API_TOKEN", "").strip())
+    has_gemini_key = bool(os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip())
     replicate_base_url = os.getenv("STORYBUDDY_REPLICATE_BASE_URL", "https://api.replicate.com/v1").strip()
+    answer_model = os.getenv("STORYBUDDY_ANSWER_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
     return {
         "hasReplicateToken": has_replicate_token,
         "replicateBaseUrl": replicate_base_url,
         "replicateConfigured": has_replicate_token,
+        "hasGeminiApiKey": has_gemini_key,
+        "answerModel": answer_model,
+        "answerConfigured": has_gemini_key,
     }
 
 
@@ -90,6 +95,11 @@ async def ask(req: AskRequest) -> AskResponse:
 
     try:
         return await run_ask_pipeline(package, req.question, req.model)
+    except AnswerGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=exc.detail,
+        ) from exc
     except CardImageGenerationError as exc:
         raise HTTPException(
             status_code=502,

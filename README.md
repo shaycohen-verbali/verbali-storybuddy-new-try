@@ -12,6 +12,24 @@ This v2 implementation adds a Python backend that handles:
 - replicate image generation (`nano-banana-2` / `nano-banana` / `nano-banana-pro`)
 - full debug bundle + telemetry timeline
 
+## Answer model configuration
+
+StoryBuddy answer option generation uses Google Gemini through the Google Generative Language API.
+
+Required:
+
+```bash
+export GEMINI_API_KEY=YOUR_GOOGLE_AI_STUDIO_KEY
+```
+
+Also accepted (fallback name):
+- `GOOGLE_API_KEY`
+
+Optional:
+- `STORYBUDDY_ANSWER_MODEL` (default `gemini-2.5-flash`)
+- `STORYBUDDY_GEMINI_BASE_URL` (default `https://generativelanguage.googleapis.com/v1beta`)
+- `STORYBUDDY_ALLOW_RULE_BASED_FALLBACK` (default `false`; when `true`, uses local heuristic fallback if Gemini fails)
+
 ## Architecture
 
 - Frontend: `index.html`, `styles.css`, `app.js`

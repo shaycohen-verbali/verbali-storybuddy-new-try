@@ -73,6 +73,12 @@ async function init() {
     const message = "Replicate is not configured. Set REPLICATE_API_TOKEN to generate images.";
     setSetupNote(message);
     el.timingsView.textContent = message;
+    return;
+  }
+  if (state.runtimeConfig && !state.runtimeConfig.answerConfigured) {
+    const message = "Gemini is not configured. Set GEMINI_API_KEY to generate answer options.";
+    setSetupNote(message);
+    el.timingsView.textContent = message;
   }
 }
 
@@ -266,6 +272,10 @@ function wireAsk() {
       el.timingsView.textContent = "Replicate is not configured. Add REPLICATE_API_TOKEN and redeploy.";
       return;
     }
+    if (state.runtimeConfig && !state.runtimeConfig.answerConfigured) {
+      el.timingsView.textContent = "Gemini is not configured. Add GEMINI_API_KEY and redeploy.";
+      return;
+    }
 
     el.generateBtn.disabled = true;
     el.generateBtn.textContent = "Generating...";
@@ -281,7 +291,7 @@ function wireAsk() {
       await renderAskResult(result);
       stopAskTimer(performance.now() - askStartedAt);
     } catch (err) {
-      el.timingsView.textContent = `Ask failed: ${readError(err)}. Check REPLICATE_API_TOKEN and Replicate model access.`;
+      el.timingsView.textContent = `Ask failed: ${readError(err)}. Check GEMINI_API_KEY and REPLICATE_API_TOKEN in Vercel project settings.`;
       stopAskTimer(performance.now() - askStartedAt);
     } finally {
       el.generateBtn.disabled = false;
