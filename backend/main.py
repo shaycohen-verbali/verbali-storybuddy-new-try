@@ -36,12 +36,18 @@ def config() -> dict:
     has_gemini_key = bool(os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip())
     replicate_base_url = os.getenv("STORYBUDDY_REPLICATE_BASE_URL", "https://api.replicate.com/v1").strip()
     answer_model = os.getenv("STORYBUDDY_ANSWER_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    character_model = (
+        os.getenv("STORYBUDDY_CHARACTER_MODEL", "").strip()
+        or answer_model
+        or "gemini-3.1"
+    )
     return {
         "hasReplicateToken": has_replicate_token,
         "replicateBaseUrl": replicate_base_url,
         "replicateConfigured": has_replicate_token,
         "hasGeminiApiKey": has_gemini_key,
         "answerModel": answer_model,
+        "characterModel": character_model,
         "answerConfigured": has_gemini_key,
     }
 
